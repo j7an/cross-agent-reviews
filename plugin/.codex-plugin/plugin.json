@@ -1,0 +1,34 @@
+{
+  "name": "cross-agent-reviews",
+  "version": "0.1.0",
+  "description": "3-round cross-agent spec/plan review pipeline. Reviewer audits findings and author settles them across fresh sessions, with a strict final round.",
+  "author": {
+    "name": "j7an",
+    "url": "https://github.com/j7an"
+  },
+  "homepage": "https://github.com/j7an/cross-agent-reviews",
+  "repository": "https://github.com/j7an/cross-agent-reviews",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "spec-review",
+    "plan-review",
+    "cross-agent",
+    "subagent-pattern",
+    "code-review"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cross-Agent Reviews",
+    "shortDescription": "3-round cross-agent spec/plan review pipeline",
+    "longDescription": "Six-step pipeline for reviewing specs and implementation plans across multiple sessions. Reviewer rounds (1a/2a/3a — audit) dispatch 5 parallel sub-agents per slice with model-tier guidance. Author rounds (1b/2b/3b — settle) accept or reject findings and edit the artifact. Round 3 is a strict final pass. Terminates with status READY_FOR_IMPLEMENTATION or CORRECTED_AND_READY.",
+    "developerName": "j7an",
+    "category": "Coding",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Run cr-1a-audit on the spec at <path>",
+      "Run cr-1b-settle with the round 1a JSON",
+      "Run cr-3b-final-settle with the round 3a JSON"
+    ]
+  }
+}

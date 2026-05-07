@@ -1,0 +1,20 @@
+{
+  "name": "cross-agent-reviews",
+  "description": "3-round cross-agent spec/plan review pipeline. Reviewer audits findings and author settles them across fresh sessions, with a strict final round.",
+  "version": "0.1.0",
+  "author": {
+    "name": "j7an",
+    "url": "https://github.com/j7an"
+  },
+  "homepage": "https://github.com/j7an/cross-agent-reviews",
+  "repository": "https://github.com/j7an/cross-agent-reviews",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "spec-review",
+    "plan-review",
+    "cross-agent",
+    "subagent-pattern",
+    "code-review"
+  ]
+}
