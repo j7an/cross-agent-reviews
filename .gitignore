@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local-only Claude Code config
+.claude/settings.local.json
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Worktrees (per global convention: only .worktrees/ at repo root)
+.worktrees/
+
+# Specs and plans (local-only design artifacts; never committed)
+docs/
