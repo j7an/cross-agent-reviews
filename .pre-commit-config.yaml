@@ -1,0 +1,61 @@
+default_install_hook_types: [pre-commit, pre-push]
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-ast
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-case-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.25
+    hooks:
+      - id: validate-pyproject
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.5.0
+    hooks:
+      - id: uv-lock
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest with coverage
+        entry: uv run pytest --cov=scripts --cov-fail-under=85 tests/
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: bats
+        name: bats
+        entry: bats tests/bats/
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
