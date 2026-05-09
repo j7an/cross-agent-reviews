@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://j7an.github.io/cross-agent-reviews/schema/v1/finding.json",
+  "title": "Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "location", "severity", "finding", "why_it_matters", "suggested_direction"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^R[123]-[1-6]-[0-9]{3}$"},
+    "location": {"type": "string", "minLength": 1},
+    "severity": {"type": "string", "enum": ["blocker", "gap", "nit", "false_positive_check"]},
+    "finding": {"type": "string", "minLength": 1},
+    "why_it_matters": {"type": "string", "minLength": 1},
+    "suggested_direction": {"type": "string", "minLength": 1}
+  }
+}
