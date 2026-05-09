@@ -1,7 +1,7 @@
 {
   "name": "cross-agent-reviews",
-  "version": "0.1.0",
-  "description": "3-round cross-agent spec/plan review pipeline. Reviewer audits findings and author settles them across fresh sessions, with a strict final round.",
+  "version": "0.1.1",
+  "description": "State-driven 3-round / 6-step cross-agent spec/plan review pipeline. Single `/cr` command advances the active pipeline; .cross-agent-reviews/<slug>/ persists state across rounds and hosts.",
   "author": {
     "name": "j7an",
     "url": "https://github.com/j7an"
@@ -20,15 +20,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Cross-Agent Reviews",
-    "shortDescription": "3-round cross-agent spec/plan review pipeline",
-    "longDescription": "Six-step pipeline for reviewing specs and implementation plans across multiple sessions. Reviewer rounds (1a/2a/3a — audit) dispatch 5 parallel sub-agents per slice with model-tier guidance. Author rounds (1b/2b/3b — settle) accept or reject findings and edit the artifact. Round 3 is a strict final pass. Terminates with status READY_FOR_IMPLEMENTATION or CORRECTED_AND_READY.",
+    "shortDescription": "State-driven /cr cross-agent spec/plan review pipeline",
+    "longDescription": "Single /cr command advances the active 3-round / 6-step review pipeline. Reads .cross-agent-reviews/<slug>/state.json, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b), validates output via JSON Schema, and persists state. Audit rounds (1a/2a/3a) require fresh sessions; settle rounds (1b/2b/3b) do not. Supports cross-host paste-import. Terminates with status READY_FOR_IMPLEMENTATION or CORRECTED_AND_READY.",
     "developerName": "j7an",
     "category": "Coding",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
-      "Run cr-1a-audit on the spec at <path>",
-      "Run cr-1b-settle with the round 1a JSON",
-      "Run cr-3b-final-settle with the round 3a JSON"
+      "/cr docs/specs/foo-design.md",
+      "/cr",
+      "/cr status"
     ]
   }
 }
