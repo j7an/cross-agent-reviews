@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2010,SC2015,SC2016
 # Dev-time prompt-content static check for cross-agent-reviews v0.1.0.
 # Runs 39 checks across categories A-H per spec §10.2.
 #
