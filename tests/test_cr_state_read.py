@@ -1,0 +1,462 @@
+"""Tests for cr_state_read.py."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = REPO_ROOT / "scripts" / "cr_state_read.py"
+INIT = REPO_ROOT / "scripts" / "cr_state_init.py"
+WRITE = REPO_ROOT / "scripts" / "cr_state_write.py"
+
+
+def run(script, args, cwd, stdin=None):
+    return subprocess.run(
+        [sys.executable, str(script), *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "docs/specs").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "tests/fixtures/artifacts/spec.md", tmp_path / "docs/specs/foo-design.md"
+    )
+    schema_dst = tmp_path / "plugin/skills/cr/_shared/schema"
+    schema_dst.parent.mkdir(parents=True)
+    shutil.copytree(REPO_ROOT / "plugin/skills/cr/_shared/schema", schema_dst)
+    return tmp_path
+
+
+@pytest.fixture
+def workspace_with_1a(workspace):
+    artifact = workspace / "docs/specs/foo-design.md"
+    run(
+        INIT,
+        ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
+        cwd=workspace,
+        stdin="",
+    )
+    run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(REPO_ROOT / "tests/fixtures/state_write_inputs/round_1a_input.json"),
+        ],
+        cwd=workspace,
+    )
+    return workspace
+
+
+def test_read_after_1a_returns_state_and_ok(workspace_with_1a):
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"]["spec"]["current_stage"] == "round_1b_pending"
+    assert payload["integrity"] == "OK"
+
+
+def test_orphan_round_file_is_discarded(workspace_with_1a):
+    # write an orphan round-2a.json (state hasn't completed it yet)
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    (spec_dir / "round-2a.json").write_text('{"stage": "2a", "junk": true}')
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["integrity"] in {"OK", "ORPHAN_DISCARDED"}
+    # orphan file moved aside
+    assert not (spec_dir / "round-2a.json").exists()
+    discards = list(spec_dir.glob(".discard-*"))
+    assert len(discards) == 1
+
+
+def test_missing_referenced_round_signals_pending_import(workspace_with_1a):
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    (spec_dir / "round-1a.json").unlink()
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["pending_import"] is True
+    assert payload["pending_stage"] == "1a"
+
+
+def test_state_regression_halts(workspace_with_1a):
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["last_updated_at"] = "2000-01-01T00:00:00Z"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 3
+    assert "STATE_INTEGRITY_ERROR" in result.stderr
+
+
+def test_paste_bootstrap_from_state_json(workspace, fixtures_dir):
+    payload = (fixtures_dir / "schema_positive/state_spec_only.json").read_text()
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+    state = json.loads(
+        (workspace / ".cross-agent-reviews/2026-05-07-issue-1/state.json").read_text()
+    )
+    assert state["slug"] == "2026-05-07-issue-1"
+
+
+def test_paste_bootstrap_refuses_clobber(workspace_with_1a, fixtures_dir):
+    payload = (fixtures_dir / "schema_positive/state_spec_only.json").read_text()
+    result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=payload)
+    assert result.returncode == 1
+    assert "already" in result.stderr.lower() or "clobber" in result.stderr.lower()
+
+
+def test_paste_bootstrap_rejects_both_blocks_missing_spec_anchor(workspace):
+    """A pasted bootstrap with both spec and plan blocks must carry
+    plan.spec_hash_at_start. The state.schema.json cannot conditionally
+    require it; the script must reject it explicitly so spec-drift
+    protection is not silently bypassed on the destination host."""
+    state = {
+        "schema_version": 1,
+        "slug": "2026-05-07-issue-1",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": ["1a", "1b", "2a", "2b", "3a", "3b"],
+            "started_at": "2026-05-07T10:00:00Z",
+            "last_updated_at": "2026-05-07T10:30:00Z",
+        },
+        "plan": {
+            "path": "docs/plans/foo-plan.md",
+            "content_hash": "sha256:" + "1" * 64,
+            "current_stage": "round_1a_pending",
+            "completed_rounds": [],
+            "started_at": "2026-05-07T11:00:00Z",
+            "last_updated_at": "2026-05-07T11:00:00Z",
+            # NOTE: deliberately omit spec_hash_at_start
+        },
+    }
+    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "spec_hash_at_start" in result.stderr
+
+
+def test_paste_round_wrong_stage_rejected(workspace_with_1a, fixtures_dir):
+    payload = (fixtures_dir / "schema_positive/round_3a_audit.json").read_text()
+    result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=payload)
+    assert result.returncode == 1
+    assert "stage" in result.stderr.lower()
+
+
+def test_paste_round_wrong_slug_rejected(workspace_with_1a, fixtures_dir):
+    bad = json.loads((fixtures_dir / "schema_positive/round_1a_audit.json").read_text())
+    # the existing slug in workspace_with_1a is "foo"; pretend the paste names another slug
+    bad["slug"] = "different-slug"
+    result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(bad))
+    assert result.returncode == 1
+    assert "slug" in result.stderr.lower()
+
+
+def test_paste_settle_missing_adjudication_rejected(workspace_with_1a, fixtures_dir):
+    """Settle paste must replay the same cross-round invariants
+    `_build_settle_envelope` enforces locally. This case takes a 1b
+    envelope whose paired 1a (already on disk via workspace_with_1a) has at
+    least one finding, but the 1b adjudications array is empty — schema-
+    valid yet locally impossible. Without `_settle_paste_invariants`
+    running, the paste would silently advance state to round_2a_pending."""
+    bad = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    bad["slug"] = "foo"
+    bad["artifact_type"] = "spec"
+    bad["artifact_path"] = "docs/specs/foo-design.md"
+    bad["adjudications"] = []
+    bad["adjudication_summary"] = {"accepted": 0, "rejected": 0}
+    bad["accepted_findings"] = []
+    bad["rejected_findings"] = []
+    bad["changelog"] = []
+    bad["self_review"] = []
+    result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(bad))
+    assert result.returncode == 1
+    assert "missing an adjudication" in result.stderr or "missing" in result.stderr.lower()
+
+
+def test_paste_settle_accepted_without_changelog_rejected(workspace_with_1a, fixtures_dir):
+    """Schema-valid 1b paste that accepts a 1a finding but omits the
+    matching changelog entry must be rejected at paste time, mirroring the
+    `accepted finding(s) missing a changelog entry` check that
+    `cr_state_write.py` enforces on local builds."""
+    # Read prior 1a from the workspace to discover a real finding id.
+    prior_1a = json.loads(
+        (workspace_with_1a / ".cross-agent-reviews/foo/spec/round-1a.json").read_text()
+    )
+    real_id = next(f["id"] for agent in prior_1a["agents"] for f in agent["findings"])
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    # Cover every 1a finding with an adjudication; accept the first one but
+    # deliberately omit its changelog + self_review entries.
+    all_1a_ids = [f["id"] for agent in prior_1a["agents"] for f in agent["findings"]]
+    base_1b["adjudications"] = [
+        {
+            "finding_id": fid,
+            "verdict": "accept" if fid == real_id else "reject",
+            "reasoning": "regression fixture",
+        }
+        for fid in all_1a_ids
+    ]
+    base_1b["adjudication_summary"] = {"accepted": 1, "rejected": len(all_1a_ids) - 1}
+    base_1b["accepted_findings"] = [
+        f for agent in prior_1a["agents"] for f in agent["findings"] if f["id"] == real_id
+    ]
+    base_1b["rejected_findings"] = []
+    base_1b["changelog"] = []  # ← the missing-changelog invariant fires
+    base_1b["self_review"] = []
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "changelog" in result.stderr.lower()
+
+
+def test_paste_settle_accepted_findings_diverges_from_adjudications_rejected(
+    workspace_with_1a, fixtures_dir
+):
+    """Schema-valid 1b paste whose `accepted_findings` array does not match
+    the set of `adjudications[verdict == accept]` must be rejected at paste
+    time. `cr_state_write.py::_build_settle_envelope` synthesizes
+    `accepted_findings` from the adjudications and the paired audit, so a
+    locally-emitted envelope is consistent by construction; a hand-built
+    paste could omit or stuff the field. Without this check, a downstream
+    2a verifier reading `accepted_findings` would have nothing to verify."""
+    prior_1a = json.loads(
+        (workspace_with_1a / ".cross-agent-reviews/foo/spec/round-1a.json").read_text()
+    )
+    real_id = next(f["id"] for agent in prior_1a["agents"] for f in agent["findings"])
+    all_1a_ids = [f["id"] for agent in prior_1a["agents"] for f in agent["findings"]]
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    base_1b["adjudications"] = [
+        {
+            "finding_id": fid,
+            "verdict": "accept" if fid == real_id else "reject",
+            "reasoning": "regression fixture",
+        }
+        for fid in all_1a_ids
+    ]
+    base_1b["adjudication_summary"] = {"accepted": 1, "rejected": len(all_1a_ids) - 1}
+    # The adjudications accept `real_id`, but accepted_findings is empty — divergence.
+    base_1b["accepted_findings"] = []
+    base_1b["rejected_findings"] = []
+    base_1b["changelog"] = [{"finding_id": real_id, "change_made": "edited"}]
+    base_1b["self_review"] = [
+        {
+            "finding_id": real_id,
+            "resolved": True,
+            "over_specified": False,
+            "introduces_contradiction": False,
+            "notes": "",
+        }
+    ]
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "accepted_findings" in result.stderr
+
+
+def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtures_dir):
+    """A 3b paste whose `final_status` does not match the shape of
+    `accepted_findings` must be rejected. `_build_settle_envelope` derives
+    `final_status` (CORRECTED_AND_READY when accepted_findings is non-empty,
+    else READY_FOR_IMPLEMENTATION); a hand-built paste could lie about
+    terminal status while still parsing under the schema."""
+    base_3b = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    base_3b["slug"] = "foo"
+    base_3b["artifact_type"] = "spec"
+    base_3b["artifact_path"] = "docs/specs/foo-design.md"
+    # Empty accepted_findings should imply READY_FOR_IMPLEMENTATION; lying.
+    base_3b["accepted_findings"] = []
+    base_3b["adjudications"] = []
+    base_3b["adjudication_summary"] = {"accepted": 0, "rejected": 0}
+    base_3b["rejected_findings"] = []
+    base_3b["changelog"] = []
+    base_3b["self_review"] = []
+    base_3b["final_status"] = "CORRECTED_AND_READY"
+    # Walk workspace to round_3b_pending so the paste-stage check accepts a 3b.
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "round_3b_pending"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    # Forge the prerequisite paired 3a so `_settle_paste_invariants` finds it.
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    audit_3a = json.loads((spec_dir / "round-1a.json").read_text())
+    audit_3a.update({"round": 3, "stage": "3a"})
+    for agent in audit_3a["agents"]:
+        agent["status"] = "ship_ready"
+        agent["findings"] = []
+        agent["round_1_verifications"] = []
+    (spec_dir / "round-3a.json").write_text(json.dumps(audit_3a, indent=2, sort_keys=True) + "\n")
+    # Forge minimal intermediate round files so the paste path can find them.
+    for stage in ("1b", "2a", "2b"):
+        if not (spec_dir / f"round-{stage}.json").exists():
+            (spec_dir / f"round-{stage}.json").write_text('{"stage": "' + stage + '"}')
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_3b)
+    )
+    assert result.returncode == 1
+    assert "final_status" in result.stderr
+
+
+def test_paste_settle_refreshes_content_hash(workspace_with_1a, fixtures_dir):
+    """Cross-host paste-import of a settle envelope (1b/2b/3b) MUST refresh
+    `state.<artifact_type>.content_hash` to match the local artifact bytes,
+    mirroring the local-write refresh in cr_state_write.py. The cross-host
+    workflow ships the post-edit artifact alongside the envelope, so without
+    this refresh, host B's state.json keeps the pre-edit hash and a later
+    plan-init would anchor `plan.spec_hash_at_start` to the wrong bytes —
+    the same false-drift symptom as the original local-write defect."""
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    pre_hash = json.loads(state_path.read_text())["spec"]["content_hash"]
+    artifact = workspace_with_1a / "docs/specs/foo-design.md"
+    # Simulate host A's settle-edit shipped alongside the envelope.
+    artifact.write_text(artifact.read_text() + "\n<!-- 1b correction -->\n")
+    payload = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    payload["slug"] = "foo"
+    payload["artifact_type"] = "spec"
+    payload["artifact_path"] = "docs/specs/foo-design.md"
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(payload)
+    )
+    assert result.returncode == 0, result.stderr
+    state_after = json.loads(state_path.read_text())
+    expected_hash = "sha256:" + __import__("hashlib").sha256(artifact.read_bytes()).hexdigest()
+    assert state_after["spec"]["content_hash"] == expected_hash
+    assert state_after["spec"]["content_hash"] != pre_hash
+
+
+def test_check_spec_drift_clean(workspace_with_1a, tmp_path):
+    # init a plan now (after marking spec terminal)
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    plan = workspace_with_1a / "docs/plans"
+    plan.mkdir(parents=True, exist_ok=True)
+    plan_file = plan / "foo-plan.md"
+    plan_file.write_text("# foo plan\n")
+    run(
+        INIT,
+        ["--artifact-path", str(plan_file), "--artifact-type", "plan", "--no-gitignore-prompt"],
+        cwd=workspace_with_1a,
+        stdin="",
+    )
+    result = run(SCRIPT, ["--slug", "foo", "--check-spec-drift"], cwd=workspace_with_1a)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["spec_drift"] is False
+
+
+def test_resolve_drift_accept_refreshes_anchor(workspace_with_1a):
+    """`--resolve-drift accept` is the scripted recovery the router invokes
+    when the operator chooses `accept-drift` from §7.8 of the spec. It
+    refreshes state.plan.spec_hash_at_start to the current spec hash and
+    advances last_updated_at; subsequent --check-spec-drift returns clean."""
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    plan_file = workspace_with_1a / "docs/plans/foo-plan.md"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("# foo plan\n")
+    run(
+        INIT,
+        ["--artifact-path", str(plan_file), "--artifact-type", "plan", "--no-gitignore-prompt"],
+        cwd=workspace_with_1a,
+        stdin="",
+    )
+    spec_file = workspace_with_1a / "docs/specs/foo-design.md"
+    spec_file.write_text(spec_file.read_text() + "\n## Mutation\n")
+    # Drift should now be detected.
+    drift = run(SCRIPT, ["--slug", "foo", "--check-spec-drift"], cwd=workspace_with_1a)
+    assert drift.returncode == 2
+    # Resolve via accept.
+    resolve = run(SCRIPT, ["--slug", "foo", "--resolve-drift", "accept"], cwd=workspace_with_1a)
+    assert resolve.returncode == 0, resolve.stderr
+    # Drift now clean.
+    after = run(SCRIPT, ["--slug", "foo", "--check-spec-drift"], cwd=workspace_with_1a)
+    assert after.returncode == 0
+    assert json.loads(after.stdout)["spec_drift"] is False
+
+
+def test_resolve_drift_restart_archives_plan_block(workspace_with_1a):
+    """`--resolve-drift restart` archives the in-flight plan/ subdirectory
+    and removes the plan block from state.json so the operator can re-run
+    `cr_state_init --artifact-type plan` against the now-current spec."""
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    plan_file = workspace_with_1a / "docs/plans/foo-plan.md"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("# foo plan\n")
+    run(
+        INIT,
+        ["--artifact-path", str(plan_file), "--artifact-type", "plan", "--no-gitignore-prompt"],
+        cwd=workspace_with_1a,
+        stdin="",
+    )
+    plan_dir = workspace_with_1a / ".cross-agent-reviews/foo/plan"
+    plan_dir.mkdir(exist_ok=True)
+    (plan_dir / "round-1a.json").write_text('{"sentinel": true}')
+    spec_file = workspace_with_1a / "docs/specs/foo-design.md"
+    spec_file.write_text(spec_file.read_text() + "\n## Mutation\n")
+    resolve = run(SCRIPT, ["--slug", "foo", "--resolve-drift", "restart"], cwd=workspace_with_1a)
+    assert resolve.returncode == 0, resolve.stderr
+    state_after = json.loads(state_path.read_text())
+    assert "plan" not in state_after
+    archives = list((workspace_with_1a / ".cross-agent-reviews/foo").glob(".archive-*"))
+    assert len(archives) == 1
+    assert (archives[0] / "plan" / "round-1a.json").exists()
+
+
+def test_check_spec_drift_detected(workspace_with_1a):
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    plan_file = workspace_with_1a / "docs/plans/foo-plan.md"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("# foo plan\n")
+    run(
+        INIT,
+        ["--artifact-path", str(plan_file), "--artifact-type", "plan", "--no-gitignore-prompt"],
+        cwd=workspace_with_1a,
+        stdin="",
+    )
+    # mutate the spec on disk
+    spec_file = workspace_with_1a / "docs/specs/foo-design.md"
+    spec_file.write_text(spec_file.read_text() + "\n## Mutation\n")
+    result = run(SCRIPT, ["--slug", "foo", "--check-spec-drift"], cwd=workspace_with_1a)
+    assert result.returncode == 2
+    assert "SPEC_DRIFT_DETECTED" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["spec_drift"] is True
