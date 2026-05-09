@@ -1,0 +1,72 @@
+[project]
+name = "cross-agent-reviews"
+version = "0.1.0"
+description = "3-round cross-agent spec/plan review pipeline as a multi-host plugin"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["jsonschema>=4.18"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+    "pre-commit>=3.7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+source = ["scripts"]
+branch = true
+parallel = true
+# `parallel = true` writes per-process .coverage.<host>.<pid>.<rand> files
+# so subprocess CLI tests (pytest spawns scripts/*.py as subprocesses) get
+# their coverage merged in. See Cross-cutting conventions: "Subprocess
+# coverage" — repo-root sitecustomize.py pairs with this setting.
+
+[tool.coverage.report]
+fail_under = 85
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["plugin/skills/cr/_shared/schema/*.json"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+    "RUF",
+    "PIE",
+    "PGH",
+    "N",
+    "S",
+    "PT",
+    "TCH",
+]
+ignore = [
+    "E501",
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "ARG001", "S105"]
+"scripts/cr_*.py" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true
