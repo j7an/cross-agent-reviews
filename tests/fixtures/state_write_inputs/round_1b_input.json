@@ -1,0 +1,13 @@
+{
+  "stage": "1b",
+  "adjudications": [
+    {"finding_id": "R1-1-001", "verdict": "accept", "reasoning": "Field foo really is undefined."}
+  ],
+  "rejected_findings": [],
+  "changelog": [
+    {"finding_id": "R1-1-001", "change_made": "Defined foo as a string in §3.2."}
+  ],
+  "self_review": [
+    {"finding_id": "R1-1-001", "resolved": true, "over_specified": false, "introduces_contradiction": false, "notes": ""}
+  ]
+}
