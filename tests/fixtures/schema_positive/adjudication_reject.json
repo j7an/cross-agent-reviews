@@ -1,0 +1,5 @@
+{
+  "finding_id": "R1-2-007",
+  "verdict": "reject",
+  "reasoning": "False positive: the missing field is already covered by §10.3 paragraph 2."
+}

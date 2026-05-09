@@ -1,0 +1,8 @@
+{
+  "id": "R1-1-001",
+  "location": "§3.2 line 47",
+  "severity": "blocker",
+  "finding": "Spec lacks an acceptance criterion for the cross-host paste failure mode.",
+  "why_it_matters": "Without it the implementer cannot decide what diagnostic to surface.",
+  "suggested_direction": "Define the diagnostic shape in §10.3 and reference it from §15."
+}

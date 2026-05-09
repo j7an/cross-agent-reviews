@@ -1,0 +1,23 @@
+{
+  "round": 3,
+  "stage": "3a",
+  "schema_version": 1,
+  "slug": "foo",
+  "artifact_type": "spec",
+  "artifact_path": "docs/specs/foo-design.md",
+  "emitted_at": "2026-05-07T12:00:00Z",
+  "slice_plan": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "is_fixed": false},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "is_fixed": false},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "is_fixed": false},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "is_fixed": false},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "is_fixed": false}
+  ],
+  "agents": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "status": "ship_ready", "findings": [], "round_1_verifications": []}
+  ]
+}
