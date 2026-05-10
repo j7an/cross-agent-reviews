@@ -41,7 +41,7 @@ for the cross-artifact slice when present).
 If a 6th cross-artifact slice is present, run:
 
 ```bash
-uv run python scripts/cr_extract_placeholders.py --spec-path <SPEC> --plan-path <PLAN>
+python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_extract_placeholders.py" --spec-path <SPEC> --plan-path <PLAN>
 ```
 
 Capture the JSON output. The agent_id 6 sub-agent receives this as primary
@@ -89,7 +89,7 @@ Collect each sub-agent's status report. Build a JSON payload:
 Save the payload to a temp file and run:
 
 ```bash
-uv run python scripts/cr_state_write.py --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script validates, writes `round-1a.json` to disk, updates

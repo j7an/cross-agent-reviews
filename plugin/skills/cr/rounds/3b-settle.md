@@ -25,7 +25,7 @@ For each Round 3a finding, decide accept or reject. Accept ONLY a finding that i
 ## 4. Write — `final_status` is auto-derived
 
 ```bash
-uv run python scripts/cr_state_write.py --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script derives `final_status` from `len(accepted_findings)`:

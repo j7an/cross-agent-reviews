@@ -3,9 +3,8 @@
 import re
 from pathlib import Path
 
+import _cr_lib as lib
 import pytest
-
-from scripts import _cr_lib as lib
 
 # --- derive_slug ---
 

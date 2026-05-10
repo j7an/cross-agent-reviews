@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "cr_state_read.py"
-INIT = REPO_ROOT / "scripts" / "cr_state_init.py"
-WRITE = REPO_ROOT / "scripts" / "cr_state_write.py"
+HELPERS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
+SCRIPT = HELPERS / "cr_state_read.py"
+INIT = HELPERS / "cr_state_init.py"
+WRITE = HELPERS / "cr_state_write.py"
 
 
 def run(script, args, cwd, stdin=None):

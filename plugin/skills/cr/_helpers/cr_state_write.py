@@ -17,9 +17,7 @@ import sys
 from pathlib import Path
 
 import jsonschema
-from jsonschema import Draft202012Validator
-
-from scripts._cr_lib import (
+from _cr_lib import (
     atomic_write,
     build_registry,
     canonical_json,
@@ -29,6 +27,7 @@ from scripts._cr_lib import (
     now_iso8601_utc,
     state_dir,
 )
+from jsonschema import Draft202012Validator
 
 STAGE_TO_ROUND = {"1a": 1, "1b": 1, "2a": 2, "2b": 2, "3a": 3, "3b": 3}
 AUDIT_STAGES = {"1a", "2a", "3a"}

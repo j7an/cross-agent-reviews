@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from scripts._cr_lib import canonical_json
+from _cr_lib import canonical_json
 
 SENTINEL = "☃"  # ☃ snowman; cannot occur in normal markdown text
 

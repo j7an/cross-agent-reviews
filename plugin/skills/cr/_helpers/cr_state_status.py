@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from scripts._cr_lib import find_repo_root, state_dir
+from _cr_lib import find_repo_root, state_dir
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 

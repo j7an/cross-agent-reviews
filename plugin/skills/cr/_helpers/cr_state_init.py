@@ -15,7 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from scripts._cr_lib import (
+from _cr_lib import (
     atomic_write,
     canonical_json,
     compute_content_hash,

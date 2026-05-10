@@ -8,9 +8,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-READ = REPO_ROOT / "scripts" / "cr_state_read.py"
-INIT = REPO_ROOT / "scripts" / "cr_state_init.py"
-WRITE = REPO_ROOT / "scripts" / "cr_state_write.py"
+HELPERS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
+READ = HELPERS / "cr_state_read.py"
+INIT = HELPERS / "cr_state_init.py"
+WRITE = HELPERS / "cr_state_write.py"
 
 
 def run(script, args, cwd, stdin=None):

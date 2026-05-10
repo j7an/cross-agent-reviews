@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-from scripts._cr_lib import canonical_json, derive_slug, find_repo_root, state_dir
+from _cr_lib import canonical_json, derive_slug, find_repo_root, state_dir
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 

@@ -12,7 +12,7 @@ uv run pre-commit install \
 
 ```bash
 uv run pytest tests/                              # run Python tests
-uv run pytest --cov=scripts tests/                # with coverage
+uv run pytest --cov=plugin/skills/cr/_helpers tests/  # with coverage
 uv run ruff check .                               # lint
 uv run ruff format .                              # format
 bats tests/bats/                                  # bash tests
@@ -21,11 +21,11 @@ bash scripts/verify-prompt-contract.sh            # static prompt-content verifi
 
 ## TDD discipline
 
-Every new or modified `scripts/cr_*.py` (or `scripts/verify-prompt-contract.sh`) follows red-green-refactor:
+Every new or modified `plugin/skills/cr/_helpers/cr_*.py` (or `scripts/verify-prompt-contract.sh`) follows red-green-refactor:
 
 1. Write `tests/test_<script>.py` with happy-path, error-path, and edge cases. Tests fail (red).
 2. Run `uv run pytest tests/test_<script>.py` — confirm tests fail.
-3. Implement `scripts/<script>.py` with the minimum code to pass.
+3. Implement `plugin/skills/cr/_helpers/<script>.py` with the minimum code to pass.
 4. Run `uv run pytest tests/test_<script>.py` — confirm tests pass (green).
 5. Refactor for clarity, keeping tests green.
 

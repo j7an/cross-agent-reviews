@@ -18,15 +18,21 @@ dev = [
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 python_files = ["test_*.py"]
+# Make `from _cr_lib import ...` resolve in tests that import the helpers
+# directly (the helpers themselves run in script mode, where `_helpers/`
+# is automatically on sys.path[0]). Tests run under pytest, not script mode,
+# so they need an explicit pythonpath entry.
+pythonpath = ["plugin/skills/cr/_helpers"]
 
 [tool.coverage.run]
-source = ["scripts"]
+source = ["plugin/skills/cr/_helpers"]
 branch = true
 parallel = true
 # `parallel = true` writes per-process .coverage.<host>.<pid>.<rand> files
-# so subprocess CLI tests (pytest spawns scripts/*.py as subprocesses) get
-# their coverage merged in. See Cross-cutting conventions: "Subprocess
-# coverage" — repo-root sitecustomize.py pairs with this setting.
+# so subprocess CLI tests (pytest spawns plugin/skills/cr/_helpers/*.py as
+# subprocesses) get their coverage merged in. See Cross-cutting
+# conventions: "Subprocess coverage" — repo-root sitecustomize.py pairs
+# with this setting.
 
 [tool.coverage.report]
 fail_under = 85
@@ -63,7 +69,7 @@ max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "ARG001", "S105"]
-"scripts/cr_*.py" = ["T201"]
+"plugin/skills/cr/_helpers/cr_*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"

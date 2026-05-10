@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "cr_validate.py"
+SCRIPT = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr_validate.py"
 
 
 def run(args, stdin=None):

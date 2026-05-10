@@ -44,7 +44,7 @@ status enum (`findings_found` / `clean` for 1a, `verified` / `issues_found`
 for 2a, `ship_ready` / `blocker_found` for 3a) is the one supplied in
 ${ROUND_MISSION_TEXT} above and overrides the protocol's success/failure
 labels for stages 2a and 3a. The status report you return is consumed by
-the round procedure (which calls `scripts/cr_state_write.py` to assemble
+the round procedure (which calls `cr_state_write.py` to assemble
 the canonical envelope). You do NOT emit the round envelope JSON yourself
 — only your per-slice findings, verifications, and status.
 ```
@@ -54,7 +54,7 @@ the canonical envelope). You do NOT emit the round envelope JSON yourself
 When the round is on a plan AND `state.spec.path` is non-null, the slice
 plan has 6 entries (5 internal + 1 fixed cross-artifact). For
 `SLICE_AGENT_ID == 6`, the round procedure invokes
-`scripts/cr_extract_placeholders.py` first and supplies its JSON output as
+`cr_extract_placeholders.py` first and supplies its JSON output as
 the sub-agent's primary input via the
 [`cross-artifact-slice.md`](cross-artifact-slice.md) addendum. See that
 file for the full per-classification rubric.

@@ -17,9 +17,8 @@ import sys
 from pathlib import Path
 
 import jsonschema
+from _cr_lib import build_registry, find_repo_root, load_schema
 from jsonschema import Draft202012Validator
-
-from scripts._cr_lib import build_registry, find_repo_root, load_schema
 
 KIND_TO_SCHEMA = {
     "audit": "round-audit.schema.json",

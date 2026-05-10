@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-EXTRACT = REPO_ROOT / "scripts" / "cr_extract_placeholders.py"
+EXTRACT = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr_extract_placeholders.py"
 
 
 def test_hallucinated_literal_is_visible_in_extractor_report(tmp_path):
@@ -138,9 +138,8 @@ def test_round_1a_blocker_envelope_with_cross_artifact_slice_validates(tmp_path)
             },
         ],
     }
+    from _cr_lib import build_registry, find_repo_root
     from jsonschema import Draft202012Validator
-
-    from scripts._cr_lib import build_registry, find_repo_root
 
     registry = build_registry(find_repo_root(REPO_ROOT))
     Draft202012Validator(audit_schema, registry=registry).validate(envelope)
@@ -158,9 +157,8 @@ def test_round_1a_rejects_non_blocker_finding_from_agent_6():
     constraint could be quietly removed or never added and the rubric's
     enforcement claim would silently lapse."""
     import jsonschema
+    from _cr_lib import build_registry, find_repo_root
     from jsonschema import Draft202012Validator
-
-    from scripts._cr_lib import build_registry, find_repo_root
 
     schema_dir = REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema"
     audit_schema = json.loads((schema_dir / "round-audit.schema.json").read_text())

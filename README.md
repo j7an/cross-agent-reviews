@@ -195,7 +195,7 @@ The operator pastes JSON twice per round-pair (one transit per host hop). Same U
 
 ```bash
 uv run pytest tests/                              # run Python tests
-uv run pytest --cov=scripts tests/                # with coverage
+uv run pytest --cov=plugin/skills/cr/_helpers tests/  # with coverage
 uv run ruff check .                               # lint
 uv run ruff format .                              # format
 bats tests/bats/                                  # bash tests

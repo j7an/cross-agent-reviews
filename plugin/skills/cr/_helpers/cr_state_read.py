@@ -10,9 +10,7 @@ import sys
 from pathlib import Path
 
 import jsonschema
-from jsonschema import Draft202012Validator
-
-from scripts._cr_lib import (
+from _cr_lib import (
     atomic_write,
     build_registry,
     canonical_json,
@@ -29,11 +27,12 @@ from scripts._cr_lib import (
 # findings, or any 2a/3a payload whose `slice_plan` diverges from the prior
 # audit round). Replaying these on import keeps cross-host state in lockstep
 # with what local writes would have produced.
-from scripts.cr_state_write import (
+from cr_state_write import (
     SETTLE_STAGES,
     _check_slice_plan_frozen,
     _cross_round_check_2a,
 )
+from jsonschema import Draft202012Validator
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "cr_extract_placeholders.py"
+SCRIPT = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr_extract_placeholders.py"
 
 
 def run(args, cwd=REPO_ROOT, stdin=None):
