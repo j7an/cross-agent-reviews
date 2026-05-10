@@ -392,6 +392,44 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "blocks but plan.spec_hash_at_start is missing (would silently "
                 "bypass spec-drift detection)."
             )
+        # Impossible-transition invariant: a fresh bootstrap is either a
+        # brand-new pipeline (`round_1a_pending` + no completed rounds) or
+        # a terminal cross-host handoff (`ready_for_implementation` + all
+        # six rounds completed). Anything else — e.g. `round_3a_pending`
+        # with empty completed_rounds — is schema-valid but locally
+        # impossible: routing on it would jump to round 3a with no prior
+        # round files on disk, surfacing as cascading errors far from the
+        # root cause. The schema cannot express this cleanly (per-stage
+        # if/then). Catch it at paste time, naming the offending block.
+        for block_name in ("spec", "plan"):
+            block = instance.get(block_name)
+            if block is None:
+                continue
+            stage = block.get("current_stage")
+            completed = block.get("completed_rounds", [])
+            if stage == "round_1a_pending":
+                if completed:
+                    return _err(
+                        f"state integrity: bootstrap state.{block_name} has "
+                        f"current_stage='round_1a_pending' but "
+                        f"completed_rounds={completed!r} (must be [])"
+                    )
+            elif stage == "ready_for_implementation":
+                if sorted(completed) != list(ROUND_STAGES):
+                    return _err(
+                        f"state integrity: bootstrap state.{block_name} has "
+                        f"current_stage='ready_for_implementation' but "
+                        f"completed_rounds={completed!r} "
+                        f"(must contain all six: {list(ROUND_STAGES)})"
+                    )
+            else:
+                return _err(
+                    f"state integrity: bootstrap state.{block_name} has "
+                    f"current_stage={stage!r} which is not legal for a fresh "
+                    "bootstrap (must be 'round_1a_pending' with empty "
+                    "completed_rounds, or 'ready_for_implementation' with "
+                    "all rounds completed)"
+                )
         if instance.get("slug") != slug:
             return _err(
                 f"slug mismatch: state.json has {instance.get('slug')!r}, --slug says {slug!r}"
