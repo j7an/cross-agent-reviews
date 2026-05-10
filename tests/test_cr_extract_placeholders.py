@@ -178,6 +178,40 @@ def test_spec_path_not_found(tmp_path):
     assert result.returncode != 0
 
 
+def test_duplicate_same_line_partial_substitution_is_detected(tmp_path):
+    """Regression: when a spec line contains the SAME placeholder twice and
+    the plan substitutes only ONE of the occurrences, the extractor must
+    surface `is_substituted=True` for at least one entry. Earlier logic used
+    `placeholder["literal"] not in primary[1]`, which is line-level
+    containment — if any occurrence of the placeholder remained in the plan
+    line, BOTH placeholder entries reported `is_substituted=False`, hiding
+    the partial substitution from the cross-artifact rubric. The fix counts
+    occurrences (`spec_line.count(literal)` vs `plan_line.count(literal)`):
+    when the plan has fewer copies than the spec, one or more were
+    substituted and `is_substituted` MUST be True."""
+    spec = tmp_path / "spec.md"
+    plan = tmp_path / "plan.md"
+    spec.write_text("Primary <numeric-id> and backup <numeric-id> identifiers.\n")
+    plan.write_text("Primary 12345678 and backup <numeric-id> identifiers.\n")
+    result = run(["--spec-path", str(spec), "--plan-path", str(plan)])
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    placeholders = out["spec_placeholders"]
+    # The scanner emits one entry per occurrence — two `<numeric-id>` matches
+    # on the same spec line means two entries here.
+    numeric_id_entries = [p for p in placeholders if p["literal"] == "<numeric-id>"]
+    assert len(numeric_id_entries) == 2, (
+        f"expected two <numeric-id> entries, got {len(numeric_id_entries)}"
+    )
+    # At least one must be flagged substituted — the partial substitution
+    # MUST be visible to the cross-artifact rubric. Earlier line-level
+    # containment logic returned False for both.
+    substituted_flags = [p["plan_correspondence"]["is_substituted"] for p in numeric_id_entries]
+    assert any(substituted_flags), (
+        f"at least one <numeric-id> entry must report is_substituted=True; got {substituted_flags}"
+    )
+
+
 def test_placeholder_only_anchor_does_not_wildcard_match(tmp_path):
     """Locks the MIN_ANCHOR_NON_SENTINEL_CHARS guard. A spec line whose
     anchor consists only of a placeholder (`<X>`) used to collapse the
