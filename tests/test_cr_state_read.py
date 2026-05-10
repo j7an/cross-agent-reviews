@@ -161,9 +161,9 @@ def test_paste_bootstrap_rejects_both_blocks_missing_spec_anchor(workspace):
 def _bootstrap_payload(stage: str, completed: list[str], block: str = "spec") -> str:
     """Build a minimal bootstrap state.json with the given block-under-test
     set to (`current_stage`, `completed_rounds`). Used by the
-    impossible-transition invariant tests below to vary one block at a time
-    while keeping the rest of the envelope schema-valid."""
-    other_block = "plan" if block == "spec" else "spec"
+    impossible-transition invariant tests to vary one block at a time —
+    we never set both blocks here so the both-block `spec_hash_at_start`
+    invariant cannot fire and confuse the assertion."""
     state = {
         "schema_version": 1,
         "slug": "2026-05-07-issue-1",
@@ -176,11 +176,6 @@ def _bootstrap_payload(stage: str, completed: list[str], block: str = "spec") ->
             "last_updated_at": "2026-05-07T10:30:00Z",
         },
     }
-    # Keep the un-tested block legal (`round_1a_pending` + []) so we isolate
-    # the invariant under test. Plan blocks need spec_hash_at_start when
-    # paired with a spec block (the both-block invariant); but we only set
-    # ONE block at a time here.
-    del other_block
     return json.dumps(state, indent=2, sort_keys=True) + "\n"
 
 
