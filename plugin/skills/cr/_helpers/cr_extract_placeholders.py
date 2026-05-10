@@ -46,9 +46,27 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 
 def _scan_spec(text: str) -> list[dict]:
+    """Emit one entry per placeholder occurrence in the spec.
+
+    Each entry carries the `(line_idx, col_start, col_end)` triple so
+    `_correspondence` can disambiguate same-line repeats. The
+    `_occurrence_idx` field is the 0-based index of THIS match among
+    all matches of the same `literal` on the same line, and `_spec_line`
+    is the full spec line text — both feed the occurrence-counting
+    `is_substituted` check, which compares `spec_line.count(literal)` to
+    `plan_line.count(literal)` so that a partial substitution (e.g. one of
+    two occurrences replaced) is correctly flagged.
+
+    Internal-only: every `_*` key is consumed inside this module and
+    stripped before output. The exposed schema is `pattern_kind`,
+    `literal`, `spec_location`, `plan_correspondence`.
+    """
     out: list[dict] = []
     seen_at: set[tuple[int, int]] = set()
     for line_idx, line in enumerate(text.splitlines(), start=1):
+        # Per-line, per-literal occurrence counter so each entry knows
+        # whether it is the 1st, 2nd, ... appearance of the same literal.
+        per_line_literal_counter: dict[str, int] = {}
         for kind, pat in PATTERNS:
             for m in pat.finditer(line):
                 key = (line_idx, m.start())
@@ -56,6 +74,14 @@ def _scan_spec(text: str) -> list[dict]:
                     continue
                 seen_at.add(key)
                 literal = m.group(0)
+                occurrence_idx = per_line_literal_counter.get(literal, 0)
+                per_line_literal_counter[literal] = occurrence_idx + 1
+                # The anchor is the spec line with EVERY occurrence of the
+                # literal replaced by the sentinel. Same-line repeats share
+                # one anchor — that is fine: the substitution check below is
+                # line-level (count(spec) vs count(plan)) so all entries for
+                # the same line agree on `is_substituted`. What matters for
+                # the rubric is that AT LEAST ONE entry reports the flag.
                 anchor = line.replace(literal, SENTINEL).strip()
                 out.append(
                     {
@@ -64,6 +90,10 @@ def _scan_spec(text: str) -> list[dict]:
                         "spec_location": f"line {line_idx}",
                         "_anchor": anchor,
                         "_anchor_tokens": _alphanumeric_tokens(anchor.replace(SENTINEL, "")),
+                        "_spec_line": line,
+                        "_col_start": m.start(),
+                        "_col_end": m.end(),
+                        "_occurrence_idx": occurrence_idx,
                     }
                 )
     return out
@@ -149,17 +179,30 @@ def _correspondence(placeholder: dict, plan_lines: list[str]) -> dict:
         }
     candidates.sort(key=lambda c: (-c[2], c[0]))
     primary = candidates[0]
+    # Occurrence-counting substitution detection. Replacing the earlier
+    # `placeholder["literal"] not in primary[1]` line-containment check
+    # which silently passed when a spec line had N copies of the literal
+    # and the plan had any subset (e.g. spec has two `<numeric-id>`,
+    # plan substitutes one — line still contains `<numeric-id>` so the
+    # old check returned `is_substituted=False` for BOTH entries).
+    #
+    # The new rule: count occurrences on each side. If the plan has fewer
+    # copies than the spec, at least one was substituted. This is robust
+    # against reformatting that doesn't change occurrence count, and it
+    # correctly flags partial substitution. The check is line-level, so
+    # all entries for the same spec line agree on `is_substituted` — the
+    # rubric only requires AT LEAST ONE entry to report substitution when
+    # any of the same-line occurrences were replaced.
+    spec_line = placeholder.get("_spec_line", placeholder["literal"])
+    spec_count = spec_line.count(placeholder["literal"])
+    plan_count = primary[1].count(placeholder["literal"])
+    is_substituted = plan_count < spec_count
     base = {
         "found": True,
         "multiple_candidates": len(candidates) > 1,
         "literal": primary[1].strip(),
         "plan_location": f"line {primary[0]}",
-        # Substituted iff the original spec placeholder literal does NOT
-        # appear in the matched plan line. The earlier SENTINEL clause was
-        # always True (real plan text never contains the snowman) and made
-        # `is_substituted` fire even for verbatim preservation, breaking the
-        # cross-artifact rubric's hallucination classification.
-        "is_substituted": placeholder["literal"] not in primary[1],
+        "is_substituted": is_substituted,
         "is_flagged_unverified": _is_unverified_flag(primary[1]),
         "has_inline_citation": _has_citation(primary[1]),
         "candidates": [],
