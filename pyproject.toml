@@ -76,3 +76,15 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 docstring-code-format = true
+
+[tool.pyright]
+# Mirror pytest's pythonpath so Pyright resolves `from _cr_lib import ...`
+# the same way the test runtime does (the helpers live outside any
+# Pyright-discoverable package because Shape A uses script-mode flat imports).
+extraPaths = ["plugin/skills/cr/_helpers"]
+# Point at the project venv so jsonschema/referencing resolve from source.
+venvPath = "."
+venv = ".venv"
+# Match the language floor declared in `requires-python` so `from datetime
+# import UTC` (added in 3.11) is recognized.
+pythonVersion = "3.11"
