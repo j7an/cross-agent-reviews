@@ -11,8 +11,9 @@ Operator's input is one of:
 
 - **No input** — advance the active pipeline. Run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_pick_slug.py"` to pick the slug.
 - **Artifact path** (e.g., `docs/specs/foo-design.md`) — start a new review or augment an existing slug. Run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_pick_slug.py" --input <path>`.
+- **Outbound cross-host cue + artifact path** (an artifact path combined with "review on a different host", "this is for host B" / "for the other host", "init only" / "bootstrap only" / "export bootstrap", or "I'll continue on another host") — Host A side of the paste handshake. Initialize state locally and stop after emitting the bootstrap payload for the operator to carry to Host B. See §1.5 below; do NOT proceed to §2 or §4.
 - **Slug name** — explicit slug. Run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_pick_slug.py" --input <slug>`.
-- **Cross-host paste cue** ("review on a different host", "I just ran round Na on host A", "import this round", "here is the paste") — enter paste-import mode. See §3 below.
+- **Inbound cross-host paste cue** (a cross-host cue with NO artifact path, OR "I just ran round Na on host A", "import this round", "here is the paste") — Host B side: enter paste-import mode. See §3 below. (The disambiguator vs. the outbound branch is the presence of an artifact path: with a path the operator is starting a review and exporting it; without a path the operator is receiving someone else's paste.)
 - **Status query** ("show status", `/cr status`) — run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_status.py" [--slug <slug>]` and present its output.
 
 If `cr_state_pick_slug.py` returns `{"action": "ask_for_artifact_path"}`, ask the operator for the artifact path or a `state.json` paste, then re-run.
@@ -35,6 +36,26 @@ python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_init.py" --artifact-pa
 `<ARTIFACT_TYPE>` is the `artifact_type` returned by `cr_state_pick_slug.py`. The picker derives it from the path's `docs/specs/` vs. `docs/plans/` directory (falling back to suffix `-design`/`-spec`/`-plan` per §5.5) when the input is an artifact path; for slug-name input and no-input single-active advance, it derives type from the latest block in `state.json` (most-recent `last_updated_at`, with ties going to `spec`). When the operator gave only a slug name and the relevant block is missing, the picker omits `artifact_type` and the router asks the operator for the artifact path before invoking the script.
 
 The script's stdout is the `state.json` payload — capture it for cross-host scenarios.
+
+## 1.5. Outbound cross-host bootstrap (Host A side)
+
+Take this branch only when §0 classified the input as **outbound cross-host cue + artifact path** (artifact path supplied alongside one of the outbound trigger phrases). This is the matching half of §3's inbound paste-import: §1.5 emits the bootstrap payload on Host A; §3 receives it on Host B. Do NOT take this branch for cues alone (those route to §3) or for artifact paths alone (those continue through §1 → §2 → §4 normally).
+
+Run init with the gitignore prompt suppressed — the operator only wants the bootstrap JSON, not an interactive `[y/N]` confirmation:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_init.py" --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan> --no-gitignore-prompt
+```
+
+Capture the script's stdout — that IS the canonical `state.json` payload (§1 already notes this). Present it to the operator with explicit copy instructions, then halt:
+
+> Bootstrap state.json for Host B (copy below). On Host B, run `/cr` and paste this JSON when prompted; that host will validate the paste and run round 1a.
+>
+> ```json
+> { …captured stdout… }
+> ```
+
+After emitting the message, **stop**. Do NOT proceed to §2 (read state) or §4 (dispatch round 1a). Round 1a runs on Host B once the paste is validated there — running it on Host A would defeat the cross-host handoff. The operator's next `/cr` on Host A will be either a status query or an inbound paste cue (§3) when round 1a returns from Host B.
 
 ## 2. Determine the next round and apply fresh-session policy
 

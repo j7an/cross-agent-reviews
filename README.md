@@ -169,9 +169,13 @@ Operator never pastes JSON.
 
 The state directory is gitignored, so it does not sync across hosts. At every host transition the operator gives an explicit natural-language cue ("review on a different host", "I just ran round 1a on the other host; here is its output"). The router routes such cues into paste-import mode instead of running the next round locally (design §10.2).
 
+On the **initiating** host, the cue must be combined with the artifact path on the same `/cr` invocation — the router uses the presence of a path to disambiguate the **outbound** bootstrap branch (Host A: init locally and emit `state.json` for paste) from the **inbound** paste-import branch (Host B: receive the paste). A bare cue with no artifact path always routes to inbound paste-import.
+
 ```
-[Host A, fresh] /cr <spec-path>     → init on A; operator says "review on a different host"
-                                    → skill prints state.json (bootstrap payload)
+[Host A, fresh] /cr <spec-path> review on a different host
+                                    → outbound bootstrap branch: cr_state_init writes state on A
+                                    → skill prints state.json (bootstrap payload) and STOPS
+                                      (round 1a does NOT run on A)
 [Host B, fresh] /cr                 → no local state; skill asks operator to paste state.json
                 operator pastes     → cr_state_read.py --paste validates state.json (bootstrap path)
                                     → writes state.json locally
