@@ -303,6 +303,21 @@ def main() -> int:
     if not state_path.exists():
         return _err(f"no state.json for slug {args.slug!r}; run cr_state_init first")
     state = json.loads(state_path.read_text())
+    # Schema validation guards against hand-edited or otherwise corrupted
+    # state.json: without this, the writer would mutate schema-violating
+    # state and persist invalid bytes back, propagating the corruption
+    # forward. The both-block invariant below catches one specific
+    # cross-block case the schema cannot express; this validation catches
+    # the broader class. Read paths in `cr_state_read.py` deliberately do
+    # NOT validate — refusing to read corrupted state would prevent
+    # recovery. The check belongs at write entry only.
+    state_schema = load_schema("state.schema.json")
+    state_registry = build_registry()
+    try:
+        Draft202012Validator(state_schema, registry=state_registry).validate(state)
+    except jsonschema.ValidationError as e:
+        path = "/" + "/".join(str(p) for p in e.absolute_path)
+        return _err(f"state.json schema violation: {e.message} at {path}")
     # Both-block invariant: if state has both spec and plan blocks, the plan
     # block MUST carry `spec_hash_at_start`. The state.schema.json cannot
     # express this conditional requirement, and `_cmd_check_spec_drift` in
