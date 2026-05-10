@@ -31,6 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPERS_DIR = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
 PICK_SLUG = HELPERS_DIR / "cr_state_pick_slug.py"
 INIT = HELPERS_DIR / "cr_state_init.py"
+WRITE = HELPERS_DIR / "cr_state_write.py"
+READ = HELPERS_DIR / "cr_state_read.py"
+STATUS = HELPERS_DIR / "cr_state_status.py"
 
 
 # --- derive_slug: invalid inputs raise ValueError ---
@@ -167,3 +170,78 @@ def test_init_rejects_malicious_artifact_path(init_workspace: Path) -> None:
     assert "Traceback" not in result.stderr
     # The slug dir must NOT have been created (no path escape).
     assert not (init_workspace / ".cross-agent-reviews").exists()
+
+
+# --- CLI: cr_state_write/read/status reject malicious --slug values ---
+#
+# `--slug` is operator-controlled argv input, not derived from a path. Even
+# with derive_slug locked down at the upstream picker, downstream helpers
+# can be invoked directly with `--slug ..` and would still resolve
+# `state_dir(repo_root) / args.slug` to the repo root. validate_slug must
+# fire at every entry point that receives a slug from argv — defense in
+# depth, not just upstream.
+
+
+def _run(script: Path, extra: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(script), *extra],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+
+
+def test_write_rejects_malicious_slug(workspace: Path) -> None:
+    # Validation must fire before any state.json or --input-file read so
+    # this exits 1 from slug validation, not from a downstream missing-file
+    # error. Asserting "invalid slug" in stderr (the validate_slug message)
+    # is what proves the rejection is happening at the right layer.
+    result = _run(
+        WRITE,
+        [
+            "--slug",
+            "..",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(workspace / "nonexistent.json"),
+        ],
+        cwd=workspace,
+    )
+    assert result.returncode == 1, (
+        f"expected exit 1; got {result.returncode}; stderr={result.stderr!r}"
+    )
+    assert "invalid slug" in result.stderr, (
+        f"expected validate_slug rejection message; got stderr={result.stderr!r}"
+    )
+    assert "Traceback" not in result.stderr
+    assert not (workspace / ".cross-agent-reviews").exists()
+
+
+def test_read_rejects_malicious_slug(workspace: Path) -> None:
+    # The "no state for slug" path also exits 1 with ERROR in stderr,
+    # so without "invalid slug" in the assertion this test would pass
+    # coincidentally even with no validation present. The whole point of
+    # this test is to prove validate_slug fires upstream of any state read.
+    result = _run(READ, ["--slug", "..", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 1
+    assert "invalid slug" in result.stderr, (
+        f"expected validate_slug rejection message; got stderr={result.stderr!r}"
+    )
+    assert "Traceback" not in result.stderr
+    assert not (workspace / ".cross-agent-reviews").exists()
+
+
+def test_status_rejects_malicious_slug(workspace: Path) -> None:
+    # cr_state_status accepts an optional --slug. When provided, it MUST
+    # be validated even though the no-slug "list all" path is still legal.
+    result = _run(STATUS, ["--slug", ".."], cwd=workspace)
+    assert result.returncode == 1
+    assert "invalid slug" in result.stderr, (
+        f"expected validate_slug rejection message; got stderr={result.stderr!r}"
+    )
+    assert "Traceback" not in result.stderr
