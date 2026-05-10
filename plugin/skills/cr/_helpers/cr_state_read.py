@@ -44,13 +44,36 @@ def _err(msg: str, *, code: int = 1) -> int:
 
 
 def _read_round_files(artifact_dir: Path) -> dict[str, dict]:
+    """Read round-{stage}.json files into a dict keyed by stage.
+
+    Side effect: a malformed round file (one that fails `json.loads`) is
+    renamed aside to `.discard-<ts>-malformed-round-<stage>.json` and a
+    warning is emitted on stderr. The malformed entry is omitted from the
+    return value so downstream classification (`_classify`) treats it as
+    absent — the existing pending-import logic then surfaces it naturally
+    if the stage is in `completed_rounds`. The `malformed-` infix is
+    distinct from the orphan-discard prefix used at `_classify:65-73` so an
+    operator inspecting the directory can tell the two recovery kinds apart.
+    Adopting the rename here (rather than in `_classify`) means `_classify`
+    can rely on `rounds_on_disk` being well-formed."""
     out: dict[str, dict] = {}
     if not artifact_dir.exists():
         return out
     for stage in ROUND_STAGES:
         rp = artifact_dir / f"round-{stage}.json"
-        if rp.exists():
+        if not rp.exists():
+            continue
+        try:
             out[stage] = json.loads(rp.read_text())
+        except json.JSONDecodeError:
+            target = rp.with_name(
+                f".discard-{now_iso8601_utc().replace(':', '')}-malformed-round-{stage}.json"
+            )
+            rp.rename(target)
+            print(
+                f"WARNING: malformed round file at {rp}; renamed to {target}",
+                file=sys.stderr,
+            )
     return out
 
 
