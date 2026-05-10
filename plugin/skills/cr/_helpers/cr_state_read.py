@@ -278,11 +278,45 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
     # from the paired 2a's `round_1_verifications` (revisited 1b
     # corrections). Adjudications still must reference 2a NEW findings only.
     revisit_finding_ids: set[str] = set()
+    revisit_verification_status: dict[str, str] = {}
     if envelope["stage"] == "2b":
         for agent in paired_audit["agents"]:
             for v in agent.get("round_1_verifications", []):
-                revisit_finding_ids.add(v["round_1_finding_id"])
+                fid = v["round_1_finding_id"]
+                revisit_finding_ids.add(fid)
+                revisit_verification_status[fid] = v["status"]
     allowed_edit_ids = audit_finding_ids | revisit_finding_ids
+
+    # M4 invariants for 2b revisit entries — mirrors the build-side checks
+    # in `cr_state_write.py::_build_settle_envelope`. Without these the
+    # paste path accepts what a local write rejects, breaking the cross-
+    # host parity contract (§10.3): a 2b author could ship a revisit
+    # changelog without a paired self_review (or revisit an already-
+    # resolved verification) on host A, locally rejected, then paste the
+    # same envelope onto host B and have it land schema-valid.
+    if envelope["stage"] == "2b":
+        revisit_changelog_ids = {
+            c["finding_id"] for c in envelope["changelog"] if c["finding_id"] in revisit_finding_ids
+        }
+        revisit_self_review_ids = {
+            s["finding_id"]
+            for s in envelope["self_review"]
+            if s["finding_id"] in revisit_finding_ids
+        }
+        revisit_changelog_only = sorted(revisit_changelog_ids - revisit_self_review_ids)
+        revisit_self_review_only = sorted(revisit_self_review_ids - revisit_changelog_ids)
+        if revisit_changelog_only or revisit_self_review_only:
+            return (
+                "2b revisit changelog and self_review must be paired 1:1; "
+                f"changelog without self_review: {revisit_changelog_only}; "
+                f"self_review without changelog: {revisit_self_review_only}"
+            )
+        revisit_payload_ids = revisit_changelog_ids | revisit_self_review_ids
+        already_resolved = sorted(
+            fid for fid in revisit_payload_ids if revisit_verification_status.get(fid) == "resolved"
+        )
+        if already_resolved:
+            return f"2b revisit references already-resolved verification(s): {already_resolved}"
 
     adjudication_id_list = [a["finding_id"] for a in envelope["adjudications"]]
     unknown_adj = [fid for fid in adjudication_id_list if fid not in audit_findings_by_id]

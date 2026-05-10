@@ -130,10 +130,56 @@ def _build_settle_envelope(
     # reference 2a NEW findings only — round_1_verifications are
     # informational and carry no Adjudication record per 2b §2.
     revisit_finding_ids: set[str] = set()
+    revisit_verification_status: dict[str, str] = {}
     if stage == "2b":
         for agent in paired_audit["agents"]:
             for v in agent.get("round_1_verifications", []):
-                revisit_finding_ids.add(v["round_1_finding_id"])
+                fid = v["round_1_finding_id"]
+                revisit_finding_ids.add(fid)
+                revisit_verification_status[fid] = v["status"]
+
+        # M4 invariant 1: revisit changelog↔self_review pairing. The
+        # accepted-finding pairing rule below (lines 195-203) only enforces
+        # 1:1 pairing for 2a NEW finding ids; revisit entries (changelog
+        # and self_review entries whose finding_id is in the paired 2a's
+        # round_1_verifications) need their own pairing check. Without it,
+        # a 2b author can submit a revisit edit without recording the
+        # matching self_review (or vice versa), breaking the audit trail
+        # and dodging the same fix-before-emit standard adjudicated edits
+        # already enforce.
+        revisit_changelog_ids = {
+            c["finding_id"] for c in payload["changelog"] if c["finding_id"] in revisit_finding_ids
+        }
+        revisit_self_review_ids = {
+            s["finding_id"]
+            for s in payload["self_review"]
+            if s["finding_id"] in revisit_finding_ids
+        }
+        revisit_changelog_only = sorted(revisit_changelog_ids - revisit_self_review_ids)
+        revisit_self_review_only = sorted(revisit_self_review_ids - revisit_changelog_ids)
+        if revisit_changelog_only or revisit_self_review_only:
+            raise ValueError(
+                "2b revisit changelog and self_review must be paired 1:1; "
+                f"changelog without self_review: {revisit_changelog_only}; "
+                f"self_review without changelog: {revisit_self_review_only}"
+            )
+
+        # M4 invariant 2: revisits target only unresolved verifications. A
+        # round_1_verification with status='resolved' is already settled by
+        # the 2a reviewer; revisiting it would corrupt the audit trail by
+        # appending a "fix" record to a correction that was already
+        # confirmed effective. Per 2b-settle.md §2, revisits are only
+        # legitimate when status != 'resolved'. Reject if any revisit-
+        # bearing changelog or self_review entry references a finding_id
+        # whose paired 2a verification is already resolved.
+        revisit_payload_ids = revisit_changelog_ids | revisit_self_review_ids
+        already_resolved = sorted(
+            fid for fid in revisit_payload_ids if revisit_verification_status.get(fid) == "resolved"
+        )
+        if already_resolved:
+            raise ValueError(
+                f"2b revisit references already-resolved verification(s): {already_resolved}"
+            )
 
     unknown_adj = [
         a["finding_id"]
