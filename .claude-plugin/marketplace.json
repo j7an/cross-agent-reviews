@@ -12,7 +12,7 @@
     {
       "name": "cross-agent-reviews",
       "description": "3-round cross-agent spec/plan review pipeline.",
-      "version": "0.1.1",
+      "version": "0.1.0",
       "source": "./plugin",
       "policy": {
         "installation": "AVAILABLE",

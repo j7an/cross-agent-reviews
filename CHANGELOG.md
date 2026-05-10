@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - 2026-05-09
+## [Unreleased]
 
 ### Added
 
@@ -57,5 +57,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Paste-into-prompt** runtime model — cross-host portable, compaction-resilient.
 - **Parallel-build migration** — the source iteration repo `superpowers-cross-agent-reviews` is preserved unchanged as a reference; this plugin was built fresh.
 
-[0.1.1]: https://github.com/j7an/cross-agent-reviews/releases/tag/v0.1.1
+[Unreleased]: https://github.com/j7an/cross-agent-reviews/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/j7an/cross-agent-reviews/releases/tag/v0.1.0

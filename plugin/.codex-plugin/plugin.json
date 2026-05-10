@@ -1,6 +1,6 @@
 {
   "name": "cross-agent-reviews",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "description": "State-driven 3-round / 6-step cross-agent spec/plan review pipeline. Single `/cr` command advances the active pipeline; .cross-agent-reviews/<slug>/ persists state across rounds and hosts.",
   "author": {
     "name": "j7an",
