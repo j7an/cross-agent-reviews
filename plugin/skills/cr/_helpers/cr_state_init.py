@@ -33,6 +33,27 @@ def _confirm(prompt: str) -> bool:
     return answer in {"y", "yes"}
 
 
+def _require_spec_terminal_for_plan(state: dict) -> int | None:
+    """Return an exit code if plan init must be refused; else None.
+
+    Enforces §11.3: plan review may only begin when spec review is
+    terminal. Called from EVERY site that creates a `state.plan` block —
+    both the add-missing-block branch and the terminal-reinit branch.
+    Centralising the check here closes the reviewer-found gap where
+    reinit'ing a terminal plan after the spec was reverted to in-flight
+    would silently archive the old plan and capture a now-stale
+    spec_hash_at_start, defeating drift detection.
+    """
+    spec_block = state.get("spec")
+    if spec_block is not None and spec_block.get("current_stage") != "ready_for_implementation":
+        print(
+            "ERROR: spec review must be terminal before a plan review can begin (§11.3).",
+            file=sys.stderr,
+        )
+        return 1
+    return None
+
+
 def _gitignore_check(repo_root: Path, prompt: bool) -> None:
     gi = repo_root / ".gitignore"
     needle = ".cross-agent-reviews/"
@@ -137,16 +158,10 @@ def main() -> int:
 
     if existing is None:
         if block_key == "plan":
+            err = _require_spec_terminal_for_plan(state)
+            if err is not None:
+                return err
             spec_block = state.get("spec")
-            if (
-                spec_block is not None
-                and spec_block.get("current_stage") != "ready_for_implementation"
-            ):
-                print(
-                    "ERROR: spec review must be terminal before a plan review can begin (§11.3).",
-                    file=sys.stderr,
-                )
-                return 1
             spec_hash = spec_block["content_hash"] if spec_block is not None else None
             if spec_hash is None:
                 # plan-only init — warn and confirm
@@ -188,6 +203,15 @@ def main() -> int:
             )
     else:
         if existing.get("current_stage") == "ready_for_implementation":
+            if block_key == "plan":
+                # §11.3 ordering applies on the terminal-reinit branch too: a
+                # spec that has been reverted to in-flight (e.g., reinit'd via
+                # a previous run of this script) must not allow a fresh plan
+                # block to start. Check BEFORE prompting for confirmation so we
+                # don't ask the operator a question that's moot after refusal.
+                err = _require_spec_terminal_for_plan(state)
+                if err is not None:
+                    return err
             if not _confirm(
                 f"State block for `{block_key}` is terminal. Archive and start fresh? [y/N] "
             ):
