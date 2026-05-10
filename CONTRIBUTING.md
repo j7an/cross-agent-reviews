@@ -21,7 +21,7 @@ bash scripts/verify-prompt-contract.sh            # static prompt-content verifi
 
 ## TDD discipline
 
-Every new or modified `plugin/skills/cr/_helpers/cr_*.py` (or `scripts/verify-prompt-contract.sh`) follows red-green-refactor:
+Every new or modified `plugin/skills/cr/_helpers/cr_*.py` follows red-green-refactor (the bash verifier at `scripts/verify-prompt-contract.sh` intentionally remains outside the plugin tree and follows the same discipline):
 
 1. Write `tests/test_<script>.py` with happy-path, error-path, and edge cases. Tests fail (red).
 2. Run `uv run pytest tests/test_<script>.py` — confirm tests fail.

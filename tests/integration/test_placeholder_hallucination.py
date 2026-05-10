@@ -138,10 +138,10 @@ def test_round_1a_blocker_envelope_with_cross_artifact_slice_validates(tmp_path)
             },
         ],
     }
-    from _cr_lib import build_registry, find_repo_root
+    from _cr_lib import build_registry
     from jsonschema import Draft202012Validator
 
-    registry = build_registry(find_repo_root(REPO_ROOT))
+    registry = build_registry()
     Draft202012Validator(audit_schema, registry=registry).validate(envelope)
     blockers = [f for a in envelope["agents"] for f in a["findings"] if f["severity"] == "blocker"]
     assert any(f["id"].startswith("R1-6-") for f in blockers), (
@@ -157,12 +157,12 @@ def test_round_1a_rejects_non_blocker_finding_from_agent_6():
     constraint could be quietly removed or never added and the rubric's
     enforcement claim would silently lapse."""
     import jsonschema
-    from _cr_lib import build_registry, find_repo_root
+    from _cr_lib import build_registry
     from jsonschema import Draft202012Validator
 
     schema_dir = REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema"
     audit_schema = json.loads((schema_dir / "round-audit.schema.json").read_text())
-    registry = build_registry(find_repo_root(REPO_ROOT))
+    registry = build_registry()
     envelope = {
         "round": 1,
         "stage": "1a",

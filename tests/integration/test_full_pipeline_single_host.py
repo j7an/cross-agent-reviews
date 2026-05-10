@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
+HELPERS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
 
 
 def run(script, args, cwd, stdin=None):
@@ -34,7 +34,7 @@ def test_full_pipeline_terminates_ready(tmp_path):
     shutil.copytree(REPO_ROOT / "plugin/skills/cr/_shared/schema", schema_dst)
     artifact = tmp_path / "docs/specs/foo-design.md"
     init = run(
-        SCRIPTS / "cr_state_init.py",
+        HELPERS / "cr_state_init.py",
         ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
         cwd=tmp_path,
         stdin="",
@@ -51,7 +51,7 @@ def test_full_pipeline_terminates_ready(tmp_path):
         "round_3b_input.json",
     ]:
         result = run(
-            SCRIPTS / "cr_state_write.py",
+            HELPERS / "cr_state_write.py",
             [
                 "--slug",
                 "foo",
@@ -90,7 +90,7 @@ def test_full_pipeline_terminates_ready_for_plan(tmp_path):
     shutil.copytree(REPO_ROOT / "plugin/skills/cr/_shared/schema", schema_dst)
     artifact = tmp_path / "docs/plans/foo-plan.md"
     init = run(
-        SCRIPTS / "cr_state_init.py",
+        HELPERS / "cr_state_init.py",
         ["--artifact-path", str(artifact), "--artifact-type", "plan", "--no-gitignore-prompt"],
         cwd=tmp_path,
         stdin="y\n",
@@ -107,7 +107,7 @@ def test_full_pipeline_terminates_ready_for_plan(tmp_path):
         "round_3b_input.json",
     ]:
         result = run(
-            SCRIPTS / "cr_state_write.py",
+            HELPERS / "cr_state_write.py",
             [
                 "--slug",
                 "foo",

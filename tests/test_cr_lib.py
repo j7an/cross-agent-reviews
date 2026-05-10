@@ -106,29 +106,27 @@ def test_state_dir(repo_root):
 
 
 def test_schema_dir(repo_root):
-    assert (
-        lib.schema_dir(repo_root) == repo_root / "plugin" / "skills" / "cr" / "_shared" / "schema"
-    )
+    assert lib.schema_dir() == repo_root / "plugin" / "skills" / "cr" / "_shared" / "schema"
 
 
 # --- load_schema ---
 
 
-def test_load_schema_returns_dict(repo_root):
-    schema = lib.load_schema(repo_root, "finding.schema.json")
+def test_load_schema_returns_dict():
+    schema = lib.load_schema("finding.schema.json")
     assert schema["$id"] == "https://j7an.github.io/cross-agent-reviews/schema/v1/finding.json"
 
 
-def test_load_schema_unknown_raises(repo_root):
+def test_load_schema_unknown_raises():
     with pytest.raises(FileNotFoundError):
-        lib.load_schema(repo_root, "nonexistent.schema.json")
+        lib.load_schema("nonexistent.schema.json")
 
 
 # --- build_registry ---
 
 
-def test_build_registry_resolves_finding_ref(repo_root):
-    registry = lib.build_registry(repo_root)
+def test_build_registry_resolves_finding_ref():
+    registry = lib.build_registry()
     finding_uri = "https://j7an.github.io/cross-agent-reviews/schema/v1/finding.json"
     resolved = registry.resolver().lookup(finding_uri)
     assert resolved.contents["title"] == "Finding"

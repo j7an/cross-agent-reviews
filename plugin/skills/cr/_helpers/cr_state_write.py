@@ -374,8 +374,8 @@ def main() -> int:
         return _err(str(e))
 
     schema_name = "round-audit.schema.json" if stage in AUDIT_STAGES else "round-settle.schema.json"
-    schema = load_schema(repo_root, schema_name)
-    registry = build_registry(repo_root)
+    schema = load_schema(schema_name)
+    registry = build_registry()
     try:
         Draft202012Validator(schema, registry=registry).validate(envelope)
     except jsonschema.ValidationError as e:

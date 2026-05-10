@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 import jsonschema
-from _cr_lib import build_registry, find_repo_root, load_schema
+from _cr_lib import build_registry, load_schema
 from jsonschema import Draft202012Validator
 
 KIND_TO_SCHEMA = {
@@ -40,9 +40,8 @@ def main() -> int:
         print(f"ERROR: invalid JSON ({e})", file=sys.stderr)
         return 1
 
-    repo_root = find_repo_root(Path.cwd())
-    schema = load_schema(repo_root, KIND_TO_SCHEMA[args.kind])
-    registry = build_registry(repo_root)
+    schema = load_schema(KIND_TO_SCHEMA[args.kind])
+    registry = build_registry()
     try:
         Draft202012Validator(schema, registry=registry).validate(instance)
     except jsonschema.ValidationError as e:

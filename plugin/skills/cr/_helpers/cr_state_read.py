@@ -358,7 +358,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         instance = json.loads(raw)
     except json.JSONDecodeError as e:
         return _err(f"invalid JSON: {e}")
-    registry = build_registry(repo_root)
+    registry = build_registry()
     is_bootstrap = (
         "schema_version" in instance
         and ("spec" in instance or "plan" in instance)
@@ -368,7 +368,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     if is_bootstrap:
         if state_path.exists():
             return _err(f"refusing to clobber existing state.json for slug {slug!r}")
-        schema = load_schema(repo_root, "state.schema.json")
+        schema = load_schema("state.schema.json")
         try:
             Draft202012Validator(schema, registry=registry).validate(instance)
         except jsonschema.ValidationError as e:
@@ -413,7 +413,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     state = json.loads(state_path.read_text())
     is_audit = "agents" in instance
     schema_name = "round-audit.schema.json" if is_audit else "round-settle.schema.json"
-    schema = load_schema(repo_root, schema_name)
+    schema = load_schema(schema_name)
     try:
         Draft202012Validator(schema, registry=registry).validate(instance)
     except jsonschema.ValidationError as e:

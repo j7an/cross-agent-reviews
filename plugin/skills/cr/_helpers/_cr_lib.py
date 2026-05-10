@@ -73,28 +73,25 @@ def state_dir(repo_root: Path) -> Path:
     return repo_root / ".cross-agent-reviews"
 
 
-def schema_dir(repo_root: Path | None = None) -> Path:
+def schema_dir() -> Path:
     """Self-locating: schemas are siblings of this _helpers/ dir.
 
-    The `repo_root` parameter is preserved for backward call-compat but
-    is now a no-op for schema discovery — schemas live next to this file
-    (`<plugin_root>/skills/cr/_shared/schema/`), not under the operator's
-    repo. Computing the path from `__file__` lets the plugin work whether
-    the operator's CWD is a repo root, a subdirectory, or somewhere
-    entirely outside any repo.
+    Schemas live next to this file at `<plugin_root>/skills/cr/_shared/schema/`,
+    not under the operator's repo. Resolving from `__file__` lets the plugin
+    work whether the operator's CWD is a repo root, a subdirectory, or
+    somewhere entirely outside any repo.
     """
-    del repo_root  # intentional no-op
     return Path(__file__).resolve().parent.parent / "_shared" / "schema"
 
 
-def load_schema(repo_root: Path | None, name: str) -> dict:
-    return json.loads((schema_dir(repo_root) / name).read_text())
+def load_schema(name: str) -> dict:
+    return json.loads((schema_dir() / name).read_text())
 
 
-def build_registry(repo_root: Path | None = None) -> Registry:
+def build_registry() -> Registry:
     resources = []
     for name in SCHEMA_FILES:
-        schema = load_schema(repo_root, name)
+        schema = load_schema(name)
         resources.append((schema["$id"], Resource.from_contents(schema)))
     return Registry().with_resources(resources)
 
