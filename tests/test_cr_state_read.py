@@ -440,6 +440,164 @@ def test_paste_settle_accepted_findings_diverges_from_adjudications_rejected(
     assert "accepted_findings" in result.stderr
 
 
+def _walk_workspace_to_2b_pending(workspace, fid="R1-1-001", status="not_resolved"):
+    """Advance workspace state through 1a → 1b → 2a so a 2b paste can be
+    exercised. Forges a paired 2a round file with the named verification's
+    status flipped (defaults to `not_resolved`, the precondition for a
+    legitimate 2b revisit). Returns the per-test artifact directory."""
+    state_path = workspace / ".cross-agent-reviews/foo/state.json"
+    spec_dir = workspace / ".cross-agent-reviews/foo/spec"
+    # Use the existing 1a on disk to construct minimal 1b and 2a envelopes
+    # that satisfy the paired-audit shape `_settle_paste_invariants` reads.
+    audit_1a = json.loads((spec_dir / "round-1a.json").read_text())
+    settle_1b = {
+        "round": 1,
+        "stage": "1b",
+        "schema_version": 1,
+        "slug": audit_1a["slug"],
+        "artifact_type": audit_1a["artifact_type"],
+        "artifact_path": audit_1a["artifact_path"],
+        "emitted_at": audit_1a["emitted_at"],
+        "slice_plan": audit_1a["slice_plan"],
+        "adjudication_summary": {"accepted": 1, "rejected": 0},
+        "adjudications": [
+            {"finding_id": fid, "verdict": "accept", "reasoning": "regression fixture"}
+        ],
+        "accepted_findings": [
+            f for agent in audit_1a["agents"] for f in agent["findings"] if f["id"] == fid
+        ],
+        "rejected_findings": [],
+        "changelog": [{"finding_id": fid, "change_made": "edited"}],
+        "self_review": [
+            {
+                "finding_id": fid,
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "",
+            }
+        ],
+    }
+    (spec_dir / "round-1b.json").write_text(json.dumps(settle_1b, indent=2, sort_keys=True) + "\n")
+    audit_2a = json.loads(json.dumps(audit_1a))  # deep copy
+    audit_2a.update({"round": 2, "stage": "2a"})
+    for agent in audit_2a["agents"]:
+        agent["status"] = "verified"
+        agent["findings"] = []
+        agent["round_1_verifications"] = []
+    # Place the named verification on the agent that owns the finding id
+    # (frozen-slice ownership: `R1-{agent_id}-...`).
+    origin_agent_id = int(fid.split("-")[1])
+    for agent in audit_2a["agents"]:
+        if agent["agent_id"] == origin_agent_id:
+            agent["round_1_verifications"] = [
+                {
+                    "round_1_finding_id": fid,
+                    "status": status,
+                    "evidence": "regression fixture",
+                }
+            ]
+    (spec_dir / "round-2a.json").write_text(json.dumps(audit_2a, indent=2, sort_keys=True) + "\n")
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "round_2b_pending"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return spec_dir
+
+
+def _build_2b_paste(spec_dir, *, changelog, self_review):
+    """Build a schema-valid 2b settle envelope with caller-supplied changelog
+    and self_review arrays. Adjudications and accepted_findings are empty
+    because the paired 2a in `_walk_workspace_to_2b_pending` has no NEW
+    findings — the only edits possible are revisit edits."""
+    audit_2a = json.loads((spec_dir / "round-2a.json").read_text())
+    return {
+        "round": 2,
+        "stage": "2b",
+        "schema_version": 1,
+        "slug": audit_2a["slug"],
+        "artifact_type": audit_2a["artifact_type"],
+        "artifact_path": audit_2a["artifact_path"],
+        "emitted_at": "2026-05-08T11:00:00Z",
+        "slice_plan": audit_2a["slice_plan"],
+        "adjudication_summary": {"accepted": 0, "rejected": 0},
+        "adjudications": [],
+        "accepted_findings": [],
+        "rejected_findings": [],
+        "changelog": changelog,
+        "self_review": self_review,
+    }
+
+
+def test_paste_2b_rejects_revisit_changelog_without_paired_self_review(workspace_with_1a):
+    """M4 invariant 1, paste side: a pasted 2b envelope with a revisit
+    changelog entry whose finding_id is in the paired 2a's
+    `round_1_verifications` but has no matching self_review entry must be
+    rejected. Mirrors the local-write check so cross-host parity holds."""
+    spec_dir = _walk_workspace_to_2b_pending(workspace_with_1a)
+    envelope = _build_2b_paste(
+        spec_dir,
+        changelog=[{"finding_id": "R1-1-001", "change_made": "edited"}],
+        self_review=[],
+    )
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "self_review" in result.stderr.lower() or "self review" in result.stderr.lower()
+
+
+def test_paste_2b_rejects_revisit_self_review_without_paired_changelog(workspace_with_1a):
+    """M4 invariant 1, paste side, reverse direction."""
+    spec_dir = _walk_workspace_to_2b_pending(workspace_with_1a)
+    envelope = _build_2b_paste(
+        spec_dir,
+        changelog=[],
+        self_review=[
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "",
+            }
+        ],
+    )
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "changelog" in result.stderr.lower()
+
+
+def test_paste_2b_rejects_revisit_of_resolved_verification(workspace_with_1a):
+    """M4 invariant 2, paste side: a pasted 2b envelope whose revisit
+    changelog references a Round 1 finding whose paired 2a verification has
+    status='resolved' must be rejected at paste time."""
+    spec_dir = _walk_workspace_to_2b_pending(workspace_with_1a, status="resolved")
+    envelope = _build_2b_paste(
+        spec_dir,
+        changelog=[{"finding_id": "R1-1-001", "change_made": "pointless revisit"}],
+        self_review=[
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "",
+            }
+        ],
+    )
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "resolved" in result.stderr.lower()
+
+
 def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtures_dir):
     """A 3b paste whose `final_status` does not match the shape of
     `accepted_findings` must be rejected. `_build_settle_envelope` derives

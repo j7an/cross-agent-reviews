@@ -172,6 +172,22 @@ def test_2b_accepts_revisit_changelog_with_round_1_finding_id(workspace_with_sta
     write_round(workspace_with_state, "round_1b_input.json")
     write_round(workspace_with_state, "round_2a_input.json")
 
+    # The shared 2a fixture marks R1-1-001 verifications as `resolved`. A
+    # legitimate 2b revisit only happens when the verification was NOT resolved
+    # — and the M4 invariant rejects revisits of already-resolved verifications
+    # (see test_2b_rejects_revisit_of_resolved_verification). Flip the 2a
+    # round_1_verifications status to `not_resolved` for this happy-path test
+    # so the revisit is legal.
+    artifact_dir = workspace_with_state / ".cross-agent-reviews/foo/spec"
+    audit_2a = json.loads((artifact_dir / "round-2a.json").read_text())
+    for agent in audit_2a["agents"]:
+        for v in agent.get("round_1_verifications", []):
+            if v["round_1_finding_id"] == "R1-1-001":
+                v["status"] = "not_resolved"
+    (artifact_dir / "round-2a.json").write_text(
+        json.dumps(audit_2a, indent=2, sort_keys=True) + "\n"
+    )
+
     payload = {
         "stage": "2b",
         "adjudications": [],
@@ -213,6 +229,133 @@ def test_2b_accepts_revisit_changelog_with_round_1_finding_id(workspace_with_sta
         (workspace_with_state / ".cross-agent-reviews/foo/spec/round-2b.json").read_text()
     )
     assert env["changelog"][0]["finding_id"] == "R1-1-001"
+
+
+def _walk_to_2b_with_unresolved_verification(workspace, fid="R1-1-001"):
+    """Walk a workspace through 1a/1b/2a and flip the named verification's
+    status to `not_resolved` so the M4 revisit-pairing tests can exercise
+    legitimate revisit scenarios. Returns the per-test artifact directory."""
+    write_round(workspace, "round_1a_input.json")
+    write_round(workspace, "round_1b_input.json")
+    write_round(workspace, "round_2a_input.json")
+    artifact_dir = workspace / ".cross-agent-reviews/foo/spec"
+    audit_2a = json.loads((artifact_dir / "round-2a.json").read_text())
+    for agent in audit_2a["agents"]:
+        for v in agent.get("round_1_verifications", []):
+            if v["round_1_finding_id"] == fid:
+                v["status"] = "not_resolved"
+    (artifact_dir / "round-2a.json").write_text(
+        json.dumps(audit_2a, indent=2, sort_keys=True) + "\n"
+    )
+    return artifact_dir
+
+
+def _run_2b_write(workspace, payload, tmp_path, name):
+    payload_path = tmp_path / name
+    payload_path.write_text(json.dumps(payload))
+    return run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(payload_path),
+        ],
+        cwd=workspace,
+    )
+
+
+def test_2b_rejects_revisit_changelog_without_paired_self_review(workspace_with_state, tmp_path):
+    """M4 invariant 1: every 2b revisit changelog entry (one whose finding_id
+    is sourced from the paired 2a's round_1_verifications) MUST have a paired
+    self_review entry. Without this, an author can submit a revisit edit
+    without holding it to the same fix-before-emit standard, breaking the
+    audit-trail contract that the accepted-finding pairing rule already
+    enforces for 2a NEW findings."""
+    _walk_to_2b_with_unresolved_verification(workspace_with_state)
+    payload = {
+        "stage": "2b",
+        "adjudications": [],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Re-tightened §3.2 wording after 2a flagged residual ambiguity.",
+            }
+        ],
+        "self_review": [],  # ← orphan changelog entry; no paired self_review
+    }
+    result = _run_2b_write(workspace_with_state, payload, tmp_path, "2b_orphan_changelog.json")
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "self_review" in result.stderr.lower() or "self review" in result.stderr.lower()
+
+
+def test_2b_rejects_revisit_self_review_without_paired_changelog(workspace_with_state, tmp_path):
+    """M4 invariant 1, reverse direction: every 2b revisit self_review entry
+    MUST have a paired changelog entry. A self_review with no matching edit
+    is a self-attestation about a change that was never made."""
+    _walk_to_2b_with_unresolved_verification(workspace_with_state)
+    payload = {
+        "stage": "2b",
+        "adjudications": [],
+        "rejected_findings": [],
+        "changelog": [],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "",
+            }
+        ],
+    }
+    result = _run_2b_write(workspace_with_state, payload, tmp_path, "2b_orphan_self_review.json")
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "changelog" in result.stderr.lower()
+
+
+def test_2b_rejects_revisit_of_resolved_verification(workspace_with_state, tmp_path):
+    """M4 invariant 2: a 2b revisit changelog entry whose paired 2a
+    round_1_verification has status='resolved' must be rejected — that
+    correction was already verified resolved by the 2a reviewer, so a
+    revisit makes no sense and would corrupt the audit trail."""
+    write_round(workspace_with_state, "round_1a_input.json")
+    write_round(workspace_with_state, "round_1b_input.json")
+    write_round(workspace_with_state, "round_2a_input.json")
+    # The shared 2a fixture already has R1-1-001 with status=resolved; no
+    # mutation needed for this test — that is precisely the scenario the
+    # invariant guards against.
+    payload = {
+        "stage": "2b",
+        "adjudications": [],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Pointless revisit of an already-resolved verification.",
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "",
+            }
+        ],
+    }
+    result = _run_2b_write(workspace_with_state, payload, tmp_path, "2b_revisit_resolved.json")
+    assert result.returncode == 1
+    assert "R1-1-001" in result.stderr
+    assert "resolved" in result.stderr.lower()
 
 
 def test_3b_final_status_ready_when_no_blockers(workspace_with_state, tmp_path):
