@@ -207,6 +207,17 @@ done
 # --- Manifest description content ---
 check_contains plugin/.claude-plugin/plugin.json "State-driven" "manifest mentions state-driven"
 
+# --- Router branch coverage ---
+# F4: SKILL.md must document the outbound cross-host bootstrap branch (Host A
+# side of the paste handshake). Without it, an operator who supplies an
+# artifact path together with a cross-host cue dead-ends — the inbound
+# paste-import branch (§3) only covers the receiving host. See README.md
+# cross-host workflow.
+check_contains plugin/skills/cr/SKILL.md "Outbound cross-host bootstrap" \
+  "F4: SKILL.md documents outbound cross-host bootstrap branch"
+check_contains plugin/skills/cr/SKILL.md "Bootstrap state.json for Host B" \
+  "F4: SKILL.md includes operator copy instructions for bootstrap payload"
+
 # --- Summary ---
 
 if [[ "$failures" -gt 0 ]]; then
