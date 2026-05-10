@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-from _cr_lib import canonical_json, derive_slug, find_repo_root, state_dir
+from _cr_lib import canonical_json, derive_slug, find_repo_root, state_dir, validate_slug
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 
@@ -97,7 +97,12 @@ def main() -> int:
     if args.input:
         if _looks_like_path(args.input):
             path = Path(args.input)
-            payload = {"slug": derive_slug(path)}
+            try:
+                slug = derive_slug(path)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+            payload = {"slug": slug}
             artifact_type = _derive_artifact_type(path)
             if artifact_type is not None:
                 payload["artifact_type"] = artifact_type
@@ -110,7 +115,14 @@ def main() -> int:
                 payload["artifact_type"] = match["artifact_type"]
             print(canonical_json(payload))
             return 0
-        # treat as a new slug name
+        # Treat as a new slug name. Validate against the same regex
+        # `derive_slug` enforces — a bare slug-name input is just as
+        # path-unsafe as a malicious filename if accepted unchecked.
+        try:
+            validate_slug(args.input)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
         print(canonical_json({"slug": args.input}))
         return 0
 

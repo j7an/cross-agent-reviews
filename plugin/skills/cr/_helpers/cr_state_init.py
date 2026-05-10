@@ -106,7 +106,11 @@ def main() -> int:
     rel_artifact = (
         artifact.relative_to(repo_root) if artifact.is_relative_to(repo_root) else artifact
     )
-    slug = derive_slug(artifact)
+    try:
+        slug = derive_slug(artifact)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     # Hash against the resolved absolute path so the read works regardless
     # of which directory the operator invoked the script from. The relative
     # path is what we persist (so state.json is portable across hosts), but

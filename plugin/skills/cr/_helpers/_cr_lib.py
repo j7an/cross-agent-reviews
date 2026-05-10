@@ -19,6 +19,14 @@ from pathlib import Path
 from referencing import Registry, Resource
 
 _SUFFIX_RE = re.compile(r"-(?:design|spec|plan|specification)$", re.IGNORECASE)
+# Strict allowlist applied AFTER suffix-stripping in derive_slug. Also used by
+# `validate_slug` for slug-name input that does NOT pass through derive_slug
+# (e.g. a bare slug typed at the CLI). Constraints:
+#   - first char alnum (rejects leading `.`, `_`, `-` — esp. `..`/`.` which
+#     would resolve as parent/current dir under state_dir)
+#   - subsequent chars (0..63) alnum or `.`, `_`, `-`
+#   - total length 1..64
+_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 SCHEMA_FILES = (
     "finding.schema.json",
@@ -33,10 +41,44 @@ SCHEMA_FILES = (
 
 
 def derive_slug(artifact_path: Path) -> str:
+    """Derive a filesystem-safe slug from an artifact path.
+
+    Strips the `.md` extension and any `-design/-spec/-plan/-specification`
+    suffix (case-insensitive), then enforces the `_SLUG_RE` allowlist.
+
+    Raises:
+        ValueError: when the post-strip base does not match `_SLUG_RE`.
+            The message names both `artifact_path.name` and the offending
+            base so the operator can fix the input without reading source.
+            This guards against path-escape inputs like `...md` (post-strip
+            base `..`), `.md` (empty base), and `..md` (base `.`), all of
+            which would resolve to or above the state directory if used as
+            a slug.
+    """
     base = artifact_path.name
     if base.endswith(".md"):
         base = base[:-3]
-    return _SUFFIX_RE.sub("", base)
+    base = _SUFFIX_RE.sub("", base)
+    if _SLUG_RE.fullmatch(base) is None:
+        raise ValueError(
+            f"invalid slug derived from {artifact_path.name!r}: "
+            f"{base!r} does not match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}"
+        )
+    return base
+
+
+def validate_slug(slug: str) -> None:
+    """Validate a slug-name input that does not pass through derive_slug.
+
+    Used by `cr_state_pick_slug` for the slug-name branch (operator types a
+    bare slug rather than an artifact path). Mirrors the regex enforced by
+    derive_slug so both entry points share a single source of truth.
+
+    Raises:
+        ValueError: when `slug` does not match `_SLUG_RE`.
+    """
+    if _SLUG_RE.fullmatch(slug) is None:
+        raise ValueError(f"invalid slug {slug!r}: does not match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}")
 
 
 def compute_content_hash(path: Path) -> str:
