@@ -26,6 +26,7 @@ from _cr_lib import (
     load_schema,
     now_iso8601_utc,
     state_dir,
+    validate_slug,
 )
 from jsonschema import Draft202012Validator
 
@@ -283,6 +284,12 @@ def main() -> int:
     p.add_argument("--artifact-path", required=True)
     p.add_argument("--input", type=Path, required=True)
     args = p.parse_args()
+
+    try:
+        validate_slug(args.slug)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     payload = json.loads(args.input.read_text())
     stage = payload.get("stage")

@@ -19,6 +19,7 @@ from _cr_lib import (
     load_schema,
     now_iso8601_utc,
     state_dir,
+    validate_slug,
 )
 
 # Reuse the same cross-round invariant checks `cr_state_write.py` runs on
@@ -482,6 +483,12 @@ def main() -> int:
     )
     p.add_argument("--paste", action="store_true")
     args = p.parse_args()
+
+    try:
+        validate_slug(args.slug)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     repo_root = find_repo_root(Path.cwd())
     if args.paste:

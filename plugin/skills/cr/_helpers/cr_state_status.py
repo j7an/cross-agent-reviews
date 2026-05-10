@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _cr_lib import find_repo_root, state_dir
+from _cr_lib import find_repo_root, state_dir, validate_slug
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 
@@ -73,6 +73,12 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--slug")
     args = p.parse_args()
+    if args.slug is not None:
+        try:
+            validate_slug(args.slug)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
     repo_root = find_repo_root(Path.cwd())
     state_root = state_dir(repo_root)
     if not state_root.exists():
