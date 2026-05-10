@@ -89,6 +89,81 @@ def test_orphan_round_file_is_discarded(workspace_with_1a):
     assert len(discards) == 1
 
 
+def test_malformed_round_file_is_renamed_not_crashed(workspace_with_1a):
+    """A malformed round file (invalid JSON) on disk for a stage that IS in
+    `completed_rounds` must not crash `_read_round_files`. The original
+    orphan-discard branch only fires for stages NOT in completed_rounds, so
+    a malformed-but-completed file would otherwise propagate `JSONDecodeError`
+    out of `_cmd_read`. The script must rename the malformed file aside with
+    a `.discard-<ts>-malformed-round-<stage>.json` prefix and treat it as
+    absent for downstream classification (where the pending-import logic
+    then picks it up naturally)."""
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    # Mark 2a as completed in state so the file is NOT classified as orphan,
+    # then drop malformed bytes into round-2a.json. Without the malformed-
+    # handling, json.loads in _read_round_files crashes the whole read.
+    state = json.loads(state_path.read_text())
+    state["spec"]["completed_rounds"] = sorted({*state["spec"]["completed_rounds"], "2a"})
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    (spec_dir / "round-2a.json").write_text("not valid JSON{{{")
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0, result.stderr
+    # Original malformed file moved aside.
+    assert not (spec_dir / "round-2a.json").exists()
+    malformed_discards = list(spec_dir.glob(".discard-*-malformed-round-2a.json"))
+    assert len(malformed_discards) == 1
+    # Operator-facing diagnostic on stderr names the path.
+    assert "malformed" in result.stderr.lower()
+
+
+def test_orphan_with_malformed_uses_distinct_prefix(workspace_with_1a):
+    """Orphan files (stage NOT in completed_rounds, JSON parses) must keep
+    using the existing `.discard-<ts>-round-<stage>.json` rename — only
+    malformed files (JSON does not parse) get the `malformed-` infix. The
+    distinct prefix lets an operator inspecting the directory tell the two
+    recovery kinds apart."""
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    # Orphan: 2a stage is NOT in completed_rounds, but the file parses fine.
+    (spec_dir / "round-2a.json").write_text('{"stage": "2a", "junk": true}')
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0
+    # Orphan-style discard exists, malformed-style discard does NOT.
+    orphan_discards = list(spec_dir.glob(".discard-*-round-2a.json"))
+    malformed_discards = list(spec_dir.glob(".discard-*-malformed-round-2a.json"))
+    assert len(orphan_discards) == 1
+    assert len(malformed_discards) == 0
+
+
+def test_malformed_and_orphan_coexist_in_one_run(workspace_with_1a):
+    """A directory can contain BOTH a malformed completed-round file (e.g.
+    round-2a.json with bad JSON, 2a in completed_rounds) AND an unrelated
+    orphan round file (e.g. round-3a.json with valid JSON but 3a NOT in
+    completed_rounds). One read pass must rename both — malformed with the
+    `malformed-` infix, orphan with the plain `.discard-<ts>-round-` prefix
+    — and exit 0."""
+    spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
+    state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["completed_rounds"] = sorted({*state["spec"]["completed_rounds"], "2a"})
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    # Malformed completed-round file.
+    (spec_dir / "round-2a.json").write_text("not valid JSON{{{")
+    # Unrelated orphan (3a is NOT in completed_rounds).
+    (spec_dir / "round-3a.json").write_text('{"stage": "3a", "junk": true}')
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace_with_1a)
+    assert result.returncode == 0, result.stderr
+    assert not (spec_dir / "round-2a.json").exists()
+    assert not (spec_dir / "round-3a.json").exists()
+    malformed_discards = list(spec_dir.glob(".discard-*-malformed-round-2a.json"))
+    orphan_discards = list(spec_dir.glob(".discard-*-round-3a.json"))
+    # Filter out any malformed-prefixed match from the orphan glob (the
+    # malformed pattern is a superset of the orphan pattern textually).
+    orphan_discards = [p for p in orphan_discards if "malformed" not in p.name]
+    assert len(malformed_discards) == 1
+    assert len(orphan_discards) == 1
+
+
 def test_missing_referenced_round_signals_pending_import(workspace_with_1a):
     spec_dir = workspace_with_1a / ".cross-agent-reviews/foo/spec"
     (spec_dir / "round-1a.json").unlink()
