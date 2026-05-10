@@ -48,14 +48,12 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 def _scan_spec(text: str) -> list[dict]:
     """Emit one entry per placeholder occurrence in the spec.
 
-    Each entry carries the `(line_idx, col_start, col_end)` triple so
-    `_correspondence` can disambiguate same-line repeats. The
-    `_occurrence_idx` field is the 0-based index of THIS match among
-    all matches of the same `literal` on the same line, and `_spec_line`
-    is the full spec line text — both feed the occurrence-counting
-    `is_substituted` check, which compares `spec_line.count(literal)` to
-    `plan_line.count(literal)` so that a partial substitution (e.g. one of
-    two occurrences replaced) is correctly flagged.
+    Each entry carries `_spec_line` (full spec line text) so
+    `_correspondence` can run the occurrence-counting `is_substituted`
+    check, which compares `spec_line.count(literal)` to
+    `plan_line.count(literal)` — that detects partial substitution
+    (e.g. one of two occurrences replaced) which the prior line-level
+    `literal in plan_line` check silently passed.
 
     Internal-only: every `_*` key is consumed inside this module and
     stripped before output. The exposed schema is `pattern_kind`,
@@ -64,9 +62,6 @@ def _scan_spec(text: str) -> list[dict]:
     out: list[dict] = []
     seen_at: set[tuple[int, int]] = set()
     for line_idx, line in enumerate(text.splitlines(), start=1):
-        # Per-line, per-literal occurrence counter so each entry knows
-        # whether it is the 1st, 2nd, ... appearance of the same literal.
-        per_line_literal_counter: dict[str, int] = {}
         for kind, pat in PATTERNS:
             for m in pat.finditer(line):
                 key = (line_idx, m.start())
@@ -74,14 +69,12 @@ def _scan_spec(text: str) -> list[dict]:
                     continue
                 seen_at.add(key)
                 literal = m.group(0)
-                occurrence_idx = per_line_literal_counter.get(literal, 0)
-                per_line_literal_counter[literal] = occurrence_idx + 1
                 # The anchor is the spec line with EVERY occurrence of the
                 # literal replaced by the sentinel. Same-line repeats share
-                # one anchor — that is fine: the substitution check below is
-                # line-level (count(spec) vs count(plan)) so all entries for
-                # the same line agree on `is_substituted`. What matters for
-                # the rubric is that AT LEAST ONE entry reports the flag.
+                # one anchor — that is fine: the substitution check is
+                # line-level (count(spec) vs count(plan)), so all entries
+                # for the same line agree on `is_substituted`. The rubric
+                # only requires AT LEAST ONE entry to report the flag.
                 anchor = line.replace(literal, SENTINEL).strip()
                 out.append(
                     {
@@ -91,9 +84,6 @@ def _scan_spec(text: str) -> list[dict]:
                         "_anchor": anchor,
                         "_anchor_tokens": _alphanumeric_tokens(anchor.replace(SENTINEL, "")),
                         "_spec_line": line,
-                        "_col_start": m.start(),
-                        "_col_end": m.end(),
-                        "_occurrence_idx": occurrence_idx,
                     }
                 )
     return out
@@ -193,7 +183,11 @@ def _correspondence(placeholder: dict, plan_lines: list[str]) -> dict:
     # all entries for the same spec line agree on `is_substituted` — the
     # rubric only requires AT LEAST ONE entry to report substitution when
     # any of the same-line occurrences were replaced.
-    spec_line = placeholder.get("_spec_line", placeholder["literal"])
+    # Direct index, not `.get`: `_spec_line` is set unconditionally by
+    # `_scan_spec`, so a missing key would mean a future caller hand-built
+    # the placeholder dict and forgot the field — better to KeyError loudly
+    # than to silently fall back to a value that masks the bug.
+    spec_line = placeholder["_spec_line"]
     spec_count = spec_line.count(placeholder["literal"])
     plan_count = primary[1].count(placeholder["literal"])
     is_substituted = plan_count < spec_count
