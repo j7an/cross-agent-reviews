@@ -158,6 +158,93 @@ def test_paste_bootstrap_rejects_both_blocks_missing_spec_anchor(workspace):
     assert "spec_hash_at_start" in result.stderr
 
 
+def _bootstrap_payload(stage: str, completed: list[str], block: str = "spec") -> str:
+    """Build a minimal bootstrap state.json with the given block-under-test
+    set to (`current_stage`, `completed_rounds`). Used by the
+    impossible-transition invariant tests below to vary one block at a time
+    while keeping the rest of the envelope schema-valid."""
+    other_block = "plan" if block == "spec" else "spec"
+    state = {
+        "schema_version": 1,
+        "slug": "2026-05-07-issue-1",
+        block: {
+            "path": f"docs/{block}s/foo-{block}.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": stage,
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T10:00:00Z",
+            "last_updated_at": "2026-05-07T10:30:00Z",
+        },
+    }
+    # Keep the un-tested block legal (`round_1a_pending` + []) so we isolate
+    # the invariant under test. Plan blocks need spec_hash_at_start when
+    # paired with a spec block (the both-block invariant); but we only set
+    # ONE block at a time here.
+    del other_block
+    return json.dumps(state, indent=2, sort_keys=True) + "\n"
+
+
+def test_bootstrap_paste_rejects_round_3a_pending_with_empty_completed(workspace):
+    """A bootstrap paste with current_stage='round_3a_pending' is logically
+    impossible: rounds 1a/1b/2a/2b must be done first. Schema validation
+    cannot express this; the script-invariant layer must reject it before
+    any downstream operation jumps to round 3a with no prior round files."""
+    payload = _bootstrap_payload("round_3a_pending", [])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "state integrity" in result.stderr.lower() or "round_3a_pending" in result.stderr
+    assert "spec" in result.stderr  # block name in diagnostic
+
+
+def test_bootstrap_paste_rejects_round_2b_pending_with_partial_completed(workspace):
+    """current_stage='round_2b_pending' with completed_rounds=['1a','1b','2a']
+    looks consistent (the 2b stage IS what comes after 2a) but is still an
+    illegal bootstrap — bootstrap is for a fresh pipeline (round_1a_pending,
+    empty) or a terminal handoff (ready_for_implementation, all six). Anything
+    in between must come from local writes, not a paste."""
+    payload = _bootstrap_payload("round_2b_pending", ["1a", "1b", "2a"], block="plan")
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "round_2b_pending" in result.stderr
+    assert "plan" in result.stderr  # block name in diagnostic
+
+
+def test_bootstrap_paste_accepts_fresh_pipeline_init(workspace):
+    """A bootstrap with current_stage='round_1a_pending' and empty
+    completed_rounds is the canonical fresh-pipeline init. Must succeed."""
+    payload = _bootstrap_payload("round_1a_pending", [])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_paste_accepts_terminal_handoff(workspace):
+    """A bootstrap with current_stage='ready_for_implementation' and
+    completed_rounds containing all six stages is the canonical terminal
+    cross-host handoff (pipeline already ran on Host A; paste informs Host
+    B that work is done). Must succeed."""
+    payload = _bootstrap_payload("ready_for_implementation", ["1a", "1b", "2a", "2b", "3a", "3b"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_paste_rejects_terminal_with_partial_completed(workspace):
+    """current_stage='ready_for_implementation' but completed_rounds=['1a']
+    is impossible: terminal stage requires all six rounds done. Reject."""
+    payload = _bootstrap_payload("ready_for_implementation", ["1a"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "ready_for_implementation" in result.stderr
+
+
+def test_bootstrap_paste_rejects_round_1a_pending_with_nonempty_completed(workspace):
+    """current_stage='round_1a_pending' but completed_rounds=['1a'] is
+    contradictory — round_1a_pending means 1a hasn't happened yet. Reject."""
+    payload = _bootstrap_payload("round_1a_pending", ["1a"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "round_1a_pending" in result.stderr
+
+
 def test_paste_round_wrong_stage_rejected(workspace_with_1a, fixtures_dir):
     payload = (fixtures_dir / "schema_positive/round_3a_audit.json").read_text()
     result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=payload)
