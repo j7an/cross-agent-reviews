@@ -454,6 +454,71 @@ def test_artifact_path_mismatch_rejected(workspace_with_state):
     assert "artifact-path" in result.stderr.lower() or "does not match" in result.stderr.lower()
 
 
+def test_rejects_state_with_schema_violation_invalid_stage(workspace_with_state):
+    """A state.json whose `current_stage` is not in the schema's enum (e.g.,
+    hand-edited or corrupted to `round_99_pending`) must be rejected on read
+    by the writer. Without this guard the writer would mutate
+    schema-violating state and persist invalid bytes back, propagating the
+    corruption forward. The error must include the JSON pointer so the
+    operator can locate the offending field without re-running."""
+    state_path = workspace_with_state / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "round_99_pending"
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+    src = REPO_ROOT / "tests" / "fixtures" / "state_write_inputs" / "round_1a_input.json"
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(src),
+        ],
+        cwd=workspace_with_state,
+    )
+    assert result.returncode == 1
+    assert "schema violation" in result.stderr.lower()
+    assert "/spec/current_stage" in result.stderr
+    # The round file must NOT have been written.
+    assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-1a.json").exists()
+
+
+def test_rejects_state_with_schema_violation_missing_required_field(workspace_with_state):
+    """A state.json missing a required top-level field (e.g., `slug`) must be
+    rejected before the writer mutates it. The both-block invariant only
+    catches one specific cross-block case; broader schema violations need
+    schema validation."""
+    state_path = workspace_with_state / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    del state["slug"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+    src = REPO_ROOT / "tests" / "fixtures" / "state_write_inputs" / "round_1a_input.json"
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(src),
+        ],
+        cwd=workspace_with_state,
+    )
+    assert result.returncode == 1
+    assert "schema violation" in result.stderr.lower()
+    # The round file must NOT have been written.
+    assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-1a.json").exists()
+
+
 def test_rejects_state_with_both_blocks_missing_spec_anchor(workspace_with_state, tmp_path):
     """If state.json has both spec and plan blocks, plan.spec_hash_at_start
     MUST be present. Otherwise spec-drift detection silently no-ops. This
