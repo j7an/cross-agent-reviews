@@ -1,0 +1,5 @@
+{
+  "finding_id": "R1-1-001",
+  "verdict": "maybe",
+  "reasoning": "Diagnostic shape is materially missing; an implementer would have to invent it."
+}

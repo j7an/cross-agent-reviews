@@ -1,0 +1,102 @@
+[project]
+name = "cross-agent-reviews"
+version = "0.1.0"
+description = "3-round cross-agent spec/plan review pipeline as a multi-host plugin"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["jsonschema>=4.18"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+    "pre-commit>=3.7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+python_files = ["test_*.py"]
+# Make `from _cr_lib import ...` resolve in tests that import the helpers
+# directly (the helpers themselves run in script mode, where `_helpers/`
+# is automatically on sys.path[0]). Tests run under pytest, not script mode,
+# so they need an explicit pythonpath entry.
+pythonpath = ["plugin/skills/cr/_helpers"]
+
+[tool.coverage.run]
+source = ["plugin/skills/cr/_helpers"]
+branch = true
+parallel = true
+# `parallel = true` writes per-process .coverage.<host>.<pid>.<rand> files
+# so subprocess CLI tests (pytest spawns plugin/skills/cr/_helpers/*.py as
+# subprocesses) get their coverage merged in. See Cross-cutting
+# conventions: "Subprocess coverage" — repo-root sitecustomize.py pairs
+# with this setting.
+
+[tool.coverage.report]
+# TODO(post-merge): raise fail_under back to 85 once subprocess coverage
+# instrumentation is fixed. Today most CLI helpers are exercised via
+# subprocess.run from tests; pytest-cov + the parallel sitecustomize.py
+# wiring under [tool.coverage.run] does not currently merge those
+# subprocess .coverage files into the parent run, so every helper reports
+# 0% even though they're all functionally tested. Measured floor is
+# ~3.98% (the _cr_lib.py direct-import tests). Setting fail_under = 3
+# keeps the regression-detection function (a *drop* below the measured
+# floor still fails the gate) without blocking developers on a known
+# instrumentation issue. Tracked separately from this branch — see the
+# v0.1.x release-policy commit (391eb87) for why the 85% target is
+# explicitly deferred until coverage tooling is fixed.
+fail_under = 3
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["plugin/skills/cr/_shared/schema/*.json"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+    "RUF",
+    "PIE",
+    "PGH",
+    "N",
+    "S",
+    "PT",
+    "TCH",
+]
+ignore = [
+    "E501",
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "ARG001", "S105"]
+"plugin/skills/cr/_helpers/cr_*.py" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.pyright]
+# Mirror pytest's pythonpath so Pyright resolves `from _cr_lib import ...`
+# the same way the test runtime does (the helpers live outside any
+# Pyright-discoverable package because Shape A uses script-mode flat imports).
+extraPaths = ["plugin/skills/cr/_helpers"]
+# Point at the project venv so jsonschema/referencing resolve from source.
+venvPath = "."
+venv = ".venv"
+# Match the language floor declared in `requires-python` so `from datetime
+# import UTC` (added in 3.11) is recognized.
+pythonVersion = "3.11"

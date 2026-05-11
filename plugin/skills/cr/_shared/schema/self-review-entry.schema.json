@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://j7an.github.io/cross-agent-reviews/schema/v1/self-review-entry.json",
+  "title": "SelfReviewEntry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "resolved", "over_specified", "introduces_contradiction", "notes"],
+  "properties": {
+    "finding_id": {"type": "string", "pattern": "^R[123]-[1-6]-[0-9]{3}$"},
+    "resolved": {"type": "boolean"},
+    "over_specified": {"type": "boolean"},
+    "introduces_contradiction": {"type": "boolean"},
+    "notes": {"type": "string"}
+  }
+}

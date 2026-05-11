@@ -23,3 +23,13 @@
 
 # Specs and plans (local-only design artifacts; never committed)
 docs/
+
+# v0.1.x additions
+.cross-agent-reviews/
+.venv/
+__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+.ruff_cache/

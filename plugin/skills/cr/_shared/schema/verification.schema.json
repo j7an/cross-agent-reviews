@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://j7an.github.io/cross-agent-reviews/schema/v1/verification.json",
+  "title": "Verification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round_1_finding_id", "status", "evidence"],
+  "properties": {
+    "round_1_finding_id": {"type": "string", "pattern": "^R1-[1-6]-[0-9]{3}$"},
+    "status": {"type": "string", "enum": ["resolved", "partially_resolved", "not_resolved"]},
+    "evidence": {"type": "string", "minLength": 1}
+  }
+}

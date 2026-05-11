@@ -1,0 +1,5 @@
+{
+  "round_1_finding_id": "R1-1-001",
+  "status": "resolved",
+  "evidence": "§10.3 now defines `BLOCKED:wrong-stage` diagnostic with the offending field name."
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://j7an.github.io/cross-agent-reviews/schema/v1/adjudication.json",
+  "title": "Adjudication",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finding_id", "verdict", "reasoning"],
+  "properties": {
+    "finding_id": {"type": "string", "pattern": "^R[123]-[1-6]-[0-9]{3}$"},
+    "verdict": {"type": "string", "enum": ["accept", "reject"]},
+    "reasoning": {"type": "string", "minLength": 1}
+  }
+}

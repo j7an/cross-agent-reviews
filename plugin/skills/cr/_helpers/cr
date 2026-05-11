@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Single entry point for cross-agent-reviews CLI helpers. Delegates Python
+# environment management (interpreter version + dependencies) to `uv run`,
+# so the operator only needs `uv` (single binary, install once).
+#
+# Usage: cr <subcommand> [args...]
+#
+# Subcommands map 1:1 to the helper scripts in this directory:
+#   state-init           -> cr_state_init.py
+#   state-read           -> cr_state_read.py
+#   state-write          -> cr_state_write.py
+#   state-pick-slug      -> cr_state_pick_slug.py
+#   state-status         -> cr_state_status.py
+#   validate             -> cr_validate.py
+#   validate-finding     -> cr_validate_finding.py
+#   extract-placeholders -> cr_extract_placeholders.py
+#
+# Why uv: pinning `--python ">=3.11"` and `--with jsonschema --with referencing`
+# in one place means the operator's `python` resolving to 3.10, or their
+# venv missing jsonschema, doesn't break helper invocations. uv provisions
+# (and caches) the right interpreter + deps on first run.
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "ERROR: uv not found on PATH. Install with:" >&2
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    echo "  (see https://docs.astral.sh/uv/getting-started/installation/)" >&2
+    exit 2
+fi
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: cr <subcommand> [args...]" >&2
+    echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, validate, validate-finding, extract-placeholders" >&2
+    exit 2
+fi
+
+HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+subcommand="$1"; shift
+
+case "$subcommand" in
+    state-init|state-read|state-write|state-pick-slug|state-status|validate|validate-finding|extract-placeholders)
+        # subcommand -> script: replace '-' with '_' and prefix with cr_, suffix .py.
+        script="cr_${subcommand//-/_}.py"
+        ;;
+    *)
+        echo "ERROR: unknown subcommand: '${subcommand}'" >&2
+        echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, validate, validate-finding, extract-placeholders" >&2
+        exit 2
+        ;;
+esac
+
+exec uv run --python ">=3.11" --with jsonschema --with referencing \
+    python "${HELPER_DIR}/${script}" "$@"

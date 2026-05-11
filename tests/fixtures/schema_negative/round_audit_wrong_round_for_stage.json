@@ -1,0 +1,39 @@
+{
+  "round": 2,
+  "stage": "1a",
+  "schema_version": 1,
+  "slug": "foo",
+  "artifact_type": "spec",
+  "artifact_path": "docs/specs/foo-design.md",
+  "emitted_at": "2026-05-07T10:30:00Z",
+  "slice_plan": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "is_fixed": false},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "is_fixed": false},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "is_fixed": false},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "is_fixed": false},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "is_fixed": false}
+  ],
+  "agents": [
+    {
+      "agent_id": 1,
+      "concern": "Data model & schemas",
+      "slice_definition": "§3-§5",
+      "status": "findings_found",
+      "findings": [
+        {
+          "id": "R1-1-001",
+          "location": "§3.2 line 47",
+          "severity": "blocker",
+          "finding": "Field foo is undefined.",
+          "why_it_matters": "Implementer cannot decide its type.",
+          "suggested_direction": "Define foo in §3.2."
+        }
+      ],
+      "round_1_verifications": []
+    },
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "status": "clean", "findings": [], "round_1_verifications": []},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "status": "clean", "findings": [], "round_1_verifications": []},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "status": "clean", "findings": [], "round_1_verifications": []},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "status": "clean", "findings": [], "round_1_verifications": []}
+  ]
+}

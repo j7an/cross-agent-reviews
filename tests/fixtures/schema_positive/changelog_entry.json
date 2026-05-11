@@ -1,0 +1,4 @@
+{
+  "finding_id": "R1-1-001",
+  "change_made": "Added the BLOCKED:wrong-stage diagnostic to §10.3 with the offending-field naming convention."
+}
