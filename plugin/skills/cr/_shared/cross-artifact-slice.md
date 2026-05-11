@@ -7,7 +7,7 @@ and is fixed (`is_fixed: true`) across all three rounds.
 ## What you receive
 
 The round procedure has already invoked
-`python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_extract_placeholders.py" --spec-path <S> --plan-path <P>` and
+`"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <S> --plan-path <P>` and
 captured its JSON output. That output is the **extractor report** — the
 mechanical part of the slice. It enumerates:
 

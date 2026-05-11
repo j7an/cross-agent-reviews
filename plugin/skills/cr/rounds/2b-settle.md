@@ -39,5 +39,5 @@ Only the `findings` array of Round 2a's agents enters the adjudication. For each
 ## 5. Write
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```

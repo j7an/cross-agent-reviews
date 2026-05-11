@@ -4,7 +4,7 @@ Use when `state.<artifact_type>.current_stage == "round_1b_pending"`. Fresh-sess
 
 ## 1. Read the round-1a output
 
-`python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_read.py" --slug <slug> --artifact-type <type>` (use the local file). The 1a findings are at `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` under `agents[].findings`.
+`"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type>` (use the local file). The 1a findings are at `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` under `agents[].findings`.
 
 ## 2. Adjudicate every finding
 
@@ -35,7 +35,7 @@ For each finding, decide accept or reject. Capture:
 ## 4. Write
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script computes `accepted_findings`, `rejected_findings`,

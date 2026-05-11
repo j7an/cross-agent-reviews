@@ -8,7 +8,7 @@ Same as Round 2a; do NOT include `slice_plan` in the payload below — `cr_state
 
 ## 2. Pre-extraction step (cross-artifact slice only)
 
-If the cross-artifact slice is present and the artifact is the plan, re-run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_extract_placeholders.py" --spec-path <SPEC> --plan-path <PLAN>` once more against the now-final plan.
+If the cross-artifact slice is present and the artifact is the plan, re-run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>` once more against the now-final plan.
 
 ## 3. Dispatch with strict-blocker mission
 
@@ -43,5 +43,5 @@ Build:
 Then:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```

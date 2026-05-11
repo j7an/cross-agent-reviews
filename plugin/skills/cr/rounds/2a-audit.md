@@ -12,7 +12,7 @@ Do NOT redefine the slice plan and do NOT include `slice_plan` in the payload be
 
 ## 3. Pre-extraction step (cross-artifact slice only)
 
-If the cross-artifact slice is present and the artifact is the plan, re-run `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_extract_placeholders.py" --spec-path <SPEC> --plan-path <PLAN>` against the corrected plan. The agent_id 6 sub-agent receives the new extractor report.
+If the cross-artifact slice is present and the artifact is the plan, re-run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>` against the corrected plan. The agent_id 6 sub-agent receives the new extractor report.
 
 ## 4. Dispatch with verification mission
 
@@ -55,5 +55,5 @@ Build:
 The agents array MUST contain one verification per accepted Round 1 finding (cardinality enforced by `cr_state_write.py`). Then:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_state_write.py" --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
