@@ -46,7 +46,12 @@ repos:
     hooks:
       - id: pytest
         name: pytest with coverage
-        entry: uv run pytest --cov=plugin/skills/cr/_helpers --cov-fail-under=85 tests/
+        # NOTE: --cov-fail-under intentionally omitted so the hook picks up
+        # the [tool.coverage.report] fail_under from pyproject.toml (currently
+        # 3, deferred from 85 — see pyproject.toml's TODO and commit 34725fc
+        # for rationale). Keep them aligned in one place rather than splitting
+        # the floor across CLI flag and config.
+        entry: uv run pytest --cov=plugin/skills/cr/_helpers tests/
         language: system
         always_run: true
         pass_filenames: false
