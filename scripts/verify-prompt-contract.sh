@@ -218,6 +218,42 @@ check_contains plugin/skills/cr/SKILL.md "Outbound cross-host bootstrap" \
 check_contains plugin/skills/cr/SKILL.md "Bootstrap state.json for Host B" \
   "F4: SKILL.md includes operator copy instructions for bootstrap payload"
 
+# F5: SKILL.md, rounds/*.md, and _shared/*.md must invoke helpers via the
+# uv-backed wrapper (`.../skills/cr/_helpers/cr <subcommand>`), not the
+# legacy `python .../skills/cr/_helpers/cr_X.py` form. The legacy form
+# breaks on real operator machines where `python` resolves to 3.10 (so
+# `from datetime import UTC` ImportErrors before argparse runs) or
+# jsonschema/referencing aren't installed. The wrapper delegates to
+# `uv run --python ">=3.11" --with jsonschema --with referencing` and
+# is the only form documented for operators.
+#
+# Sub-assertions:
+#   F5a: SKILL.md includes the wrapper-form invocation prefix.
+#   F5b: SKILL.md / rounds/ / _shared/ do NOT include the legacy
+#        `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_` prefix.
+#   F5c: The wrapper script exists and is executable.
+check_contains plugin/skills/cr/SKILL.md \
+  '"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-' \
+  "F5a: SKILL.md uses wrapper-form helper invocation"
+check_not_contains plugin/skills/cr/SKILL.md \
+  'python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_' \
+  "F5b: SKILL.md does not invoke helpers via raw 'python' (legacy form)"
+check_file_exists plugin/skills/cr/_helpers/cr "F5c: cr wrapper script exists"
+if [[ -e plugin/skills/cr/_helpers/cr && ! -x plugin/skills/cr/_helpers/cr ]]; then
+  printf 'FAIL: F5c: cr wrapper exists but is not executable\n'
+  failures=$((failures + 1))
+fi
+
+# Loop the F5b check across every round and shared markdown so a new
+# round file (or a regression in an existing one) doesn't bypass the
+# gate. Globs expand to absolute-relative paths; check_not_contains
+# accepts those directly.
+for f in plugin/skills/cr/rounds/*.md plugin/skills/cr/_shared/*.md; do
+  check_not_contains "$f" \
+    'python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_' \
+    "F5b: $f does not invoke helpers via raw 'python' (legacy form)"
+done
+
 # --- Summary ---
 
 if [[ "$failures" -gt 0 ]]; then
