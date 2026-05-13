@@ -1,0 +1,23 @@
+name: Tag Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump (v0.1.x operator-discipline: keep this on `patch` for routine releases; pick `minor` only for an intentional v0.X.0; `auto` infers from Conventional Commits since last tag)"
+        type: choice
+        required: true
+        default: patch
+        options: [patch, minor, major, auto]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    uses: j7an/shared-workflows/.github/workflows/tag-release.yml@365119edbe2b1c7339d7727d9e8d021784e5bc01  # v2.5.2
+    with:
+      bump: ${{ inputs.bump }}
+      tag-prefix: "v"
+    secrets:
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
