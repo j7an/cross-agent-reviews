@@ -1,0 +1,8 @@
+{
+  "files": [
+    { "path": ".claude-plugin/marketplace.json",   "path_expr": ".plugins[0].version" },
+    { "path": ".codex-plugin/marketplace.json",    "path_expr": ".plugins[0].version" },
+    { "path": "plugin/.claude-plugin/plugin.json", "path_expr": ".version" },
+    { "path": "plugin/.codex-plugin/plugin.json",  "path_expr": ".version" }
+  ]
+}
