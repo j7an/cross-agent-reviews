@@ -23,7 +23,13 @@ def run(args, cwd):
 
 
 def _git(args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    # Scrub GIT_* env vars so subprocess git commands resolve .git from cwd,
+    # not from an inherited GIT_DIR/GIT_INDEX_FILE. Without this, running this
+    # test from a pre-push hook leaks writes into the outer repo's index.
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env=clean_env
+    )
 
 
 @pytest.fixture
