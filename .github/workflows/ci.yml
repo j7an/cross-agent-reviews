@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  update-lockfile:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read              # detect-drift-and-fail-loud; no commit
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: Verify lockfile consistency
+        run: |
+          uv lock
+          if ! git diff --quiet uv.lock; then
+            echo "::error file=uv.lock::Lockfile is out of sync with pyproject.toml after Dependabot's dependency bump."
+            echo ""
+            echo "Run \`uv lock\` on the PR branch locally, then push the regenerated lockfile."
+            echo "Diff of regenerated vs committed:"
+            git diff uv.lock
+            exit 1
+          fi
+          echo "Lockfile is in sync with pyproject.toml."
+
+  test:
+    needs: [update-lockfile]
+    if: ${{ !cancelled() && needs.update-lockfile.result != 'failure' }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.actor == 'dependabot[bot]' && github.head_ref || '' }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Python version evidence
+        run: uv run python -VV
+      - name: Install system tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq ripgrep
+      - name: Install system tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core jq ripgrep
+      - name: pytest with coverage
+        run: uv run pytest --cov=plugin/skills/cr/_helpers tests/
+      - name: bats
+        run: bats tests/bats/
+      - name: verify-prompt-contract
+        run: bash scripts/verify-prompt-contract.sh
+
+  lint:
+    needs: [update-lockfile]
+    if: ${{ !cancelled() && needs.update-lockfile.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.actor == 'dependabot[bot]' && github.head_ref || '' }}
+      - uses: ./.github/actions/setup-uv
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
