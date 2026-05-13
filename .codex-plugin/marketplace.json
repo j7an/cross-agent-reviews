@@ -1,0 +1,28 @@
+{
+  "name": "cross-agent-reviews",
+  "description": "Marketplace entry for cross-agent-reviews",
+  "owner": {
+    "name": "j7an",
+    "url": "https://github.com/j7an"
+  },
+  "interface": {
+    "displayName": "Cross-Agent Reviews"
+  },
+  "plugins": [
+    {
+      "name": "cross-agent-reviews",
+      "description": "3-round cross-agent spec/plan review pipeline.",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding",
+      "author": {
+        "name": "j7an",
+        "url": "https://github.com/j7an"
+      }
+    }
+  ]
+}
