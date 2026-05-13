@@ -33,7 +33,7 @@ The first commit MUST introduce the test file; the second commit MUST introduce 
 
 ## Coverage floor
 
-Python coverage is enforced at `>= 85%` via `--cov-fail-under=85` in the pre-push hook.
+Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `3`, deferred from `85` until subprocess-coverage instrumentation is fixed — see the inline TODO in pyproject.toml). The pre-push hook (`.pre-commit-config.yaml`) does not pass `--cov-fail-under` on the CLI; it picks up the value from pyproject.toml so the gate has one source of truth. Restoring the 85% target is tracked separately.
 
 ## Conventional commits
 
@@ -47,3 +47,26 @@ Commits follow the pattern `<type>(<scope>): <subject>`. Types we use:
 - `chore` — tooling and housekeeping
 
 Per the project's CLAUDE.md, every commit's subject should match the **PR-level user-visible intent**, not the per-commit diff shape.
+
+## Pre-PR validation
+
+Before opening any PR that touches `.github/`, repo-root config files, or
+`pyproject.toml`, run the relevant local checks:
+
+```bash
+# Lint workflow YAML (matches security.yml's thresholds)
+uvx zizmor --min-severity=medium --min-confidence=medium \
+  .github/workflows/ .github/actions/
+
+# If touching .version-bump.json, .release-archive.json, or .github/dependabot.yml:
+bats tests/bats/test_version_bump_config.bats
+bats tests/bats/test_release_archive_config.bats
+uv run pytest tests/test_dependabot_config.py
+
+# If touching pyproject.toml or .pre-commit-config.yaml:
+uv run pytest tests/test_pyproject_metadata.py
+```
+
+If `zizmor --help` shows different flag names, use the CLI's canonical
+names — the intent is to match `security.yml`'s `min-severity: medium`
+and `min-confidence: medium`.
