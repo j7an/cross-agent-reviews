@@ -74,3 +74,16 @@ setup() {
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "F0:.*\.codex-plugin/marketplace\.json"
 }
+
+@test "verifier exits non-zero when preflight claims fresh sessions are required per round" {
+  scratch=$(mktemp -d)
+  cp -R "$REPO_ROOT/." "$scratch/"
+  cd "$scratch"
+  sed -e 's/Fresh-session preflight applies only before audit rounds (1a, 2a, 3a)./This skill requires a fresh session per round to preserve cross-agent diversity./g' \
+      plugin/skills/cr/_shared/preflight.md > plugin/skills/cr/_shared/preflight.md.new
+  mv plugin/skills/cr/_shared/preflight.md.new plugin/skills/cr/_shared/preflight.md
+  grep -q "per round" plugin/skills/cr/_shared/preflight.md
+  run bash scripts/verify-prompt-contract.sh
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "F6b:"
+}
