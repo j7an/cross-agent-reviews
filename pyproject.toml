@@ -1,5 +1,10 @@
 [project]
 name = "cross-agent-reviews"
+# Static placeholder. Canonical version is the git tag (vX.Y.Z) and the 4
+# manifest files listed in `.version-bump.json`. This field is informational
+# only — `uv sync` treats this project as virtual (no install of own code),
+# so the value is not consumer-visible. It is left at the initial value to
+# avoid drift maintenance.
 version = "0.1.0"
 description = "3-round cross-agent spec/plan review pipeline as a multi-host plugin"
 requires-python = ">=3.11"
@@ -12,7 +17,11 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.5",
     "pre-commit>=3.7",
+    "pyyaml>=6.0",
 ]
+
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,10 @@
+{
+  "description": "Files included in curated release artifacts (.tar.gz, .zip). Bump-target files in .version-bump.json must be a subset of these paths.",
+  "paths": [
+    "plugin",
+    ".claude-plugin",
+    ".codex-plugin",
+    "README.md",
+    "LICENSE"
+  ]
+}

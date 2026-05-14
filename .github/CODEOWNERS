@@ -1,0 +1,6 @@
+# Own workflow and action changes (advisory only — auto-assigns @j7an as
+# reviewer on PRs touching .github/). Enforcement (i.e., required CODEOWNERS
+# review before merge) depends on branch protection / rulesets, which are
+# deferred to a follow-up. For v0.1.x, this file shapes review-request
+# routing but does not block merges.
+/.github/ @j7an

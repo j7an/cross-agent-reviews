@@ -107,6 +107,7 @@ fi
 CC_PLUGIN="plugin/.claude-plugin/plugin.json"
 CC_MARKET=".claude-plugin/marketplace.json"
 CODEX_PLUGIN="plugin/.codex-plugin/plugin.json"
+CODEX_MARKET=".codex-plugin/marketplace.json"
 
 # Existence guard for the three manifests. Without this, F1/F2/F3 would
 # pass spuriously when manifests are missing — `check_jq_eq` degrades to
@@ -116,12 +117,19 @@ CODEX_PLUGIN="plugin/.codex-plugin/plugin.json"
 check_file_exists "$CC_PLUGIN" "F0: $CC_PLUGIN exists"
 check_file_exists "$CC_MARKET" "F0: $CC_MARKET exists"
 check_file_exists "$CODEX_PLUGIN" "F0: $CODEX_PLUGIN exists"
+check_file_exists "$CODEX_MARKET" "F0: $CODEX_MARKET exists"
 
 # F1: name and version match across all 3 manifests
 check_jq_eq "$CC_PLUGIN" '.name' "$CODEX_PLUGIN" '.name' "F1: CC plugin.json and Codex plugin.json name match"
 check_jq_eq "$CC_PLUGIN" '.version' "$CODEX_PLUGIN" '.version' "F1: CC plugin.json and Codex plugin.json version match"
 check_jq_eq "$CC_PLUGIN" '.name' "$CC_MARKET" '.plugins[0].name' "F1: CC plugin.json and marketplace.json name match"
 check_jq_eq "$CC_PLUGIN" '.version' "$CC_MARKET" '.plugins[0].version' "F1: CC plugin.json and marketplace.json version match"
+check_jq_eq "$CC_PLUGIN" '.name' "$CODEX_MARKET" '.plugins[0].name' \
+  "F1: CC plugin.json and Codex marketplace.json name match"
+check_jq_eq "$CC_PLUGIN" '.version' "$CODEX_MARKET" '.plugins[0].version' \
+  "F1: CC plugin.json and Codex marketplace.json version match"
+check_jq_eq "$CC_MARKET" '.plugins[0].version' "$CODEX_MARKET" '.plugins[0].version' \
+  "F1: Claude marketplace.json and Codex marketplace.json plugins[0].version match"
 
 # F2: top-level description identical between CC and Codex
 check_jq_eq "$CC_PLUGIN" '.description' "$CODEX_PLUGIN" '.description' "F2: CC and Codex top-level description identical"

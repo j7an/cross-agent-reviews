@@ -1,0 +1,45 @@
+version: 2
+updates:
+  # GitHub Actions: watch BOTH .github/workflows/* AND the composite action.
+  # `directory: "/"` does NOT recurse into .github/actions/* — verified by
+  # nexus-mcp PRs #160, #182 (both bumped astral-sh/setup-uv in workflow
+  # files but left .github/actions/setup-uv/action.yml at the old version).
+  # See filed issue j7an/nexus-mcp#189.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/setup-uv"
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "18:00"
+      timezone: "America/Los_Angeles"
+    groups:
+      all-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+
+  # Python dependencies (uv ecosystem — verified working in production via
+  # nexus-mcp PR #186 [2026-05-05] and dep-rank PRs #78-81 [2026-05-03])
+  - package-ecosystem: "uv"
+    directory: "/"
+    cooldown:
+      default-days: 7
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "18:00"
+      timezone: "America/Los_Angeles"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 10

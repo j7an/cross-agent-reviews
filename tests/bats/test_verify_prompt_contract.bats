@@ -61,3 +61,16 @@ setup() {
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "F4:"
 }
+
+@test "verifier exits non-zero when .codex-plugin/marketplace.json is missing" {
+  # Removes .codex-plugin/marketplace.json — the 4th manifest file that Task 5
+  # extends the F0/F1 checks to cover. The verifier must explicitly fail the
+  # F0 existence check and reject the result.
+  scratch=$(mktemp -d)
+  cp -R "$REPO_ROOT/." "$scratch/"
+  cd "$scratch"
+  rm .codex-plugin/marketplace.json
+  run bash scripts/verify-prompt-contract.sh
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "F0:.*\.codex-plugin/marketplace\.json"
+}

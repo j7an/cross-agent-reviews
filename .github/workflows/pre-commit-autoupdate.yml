@@ -1,0 +1,46 @@
+name: Pre-commit Autoupdate
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  autoupdate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - name: Run pre-commit autoupdate
+        run: uv run pre-commit autoupdate
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet .pre-commit-config.yaml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open PR with updates
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          commit-message: "deps: update pre-commit hooks"
+          title: "deps: update pre-commit hooks"
+          branch: "deps/pre-commit-autoupdate"
+          delete-branch: true
+          labels: dependencies
+          body: |
+            Automated weekly pre-commit autoupdate.
+
+            Note: GITHUB_TOKEN-authored PRs do not trigger CI on themselves
+            (recursion guard). To force CI, close-and-reopen this PR or
+            push an empty commit.

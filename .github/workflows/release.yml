@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Release-time gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq ripgrep
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest --cov=plugin/skills/cr/_helpers tests/
+      - run: bash scripts/verify-prompt-contract.sh
+      - run: bats tests/bats/
+
+  build:
+    name: Build curated artifacts
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          TAG_COMMIT="$(git rev-parse HEAD^{commit})"
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "::error::Tagged commit $TAG_COMMIT is not on main"
+            exit 1
+          fi
+      - name: Verify tag matches manifest versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a recognized semver tag (expected vX.Y.Z[-pre])."
+            echo "Push a properly formatted tag, or dispatch tag-release.yml instead of pushing manually."
+            exit 1
+          fi
+          TAG_VERSION="${TAG#v}"
+          drift=0
+          while IFS=$'\t' read -r path expr; do
+            actual="$(jq -r "$expr" "$path")"
+            if [ "$actual" != "$TAG_VERSION" ]; then
+              echo "::error file=$path::Manifest version '$actual' at $expr does not match tag '$TAG_VERSION'"
+              drift=1
+            fi
+          done < <(jq -r '.files[] | [.path, .path_expr] | @tsv' .version-bump.json)
+          if [ "$drift" -ne 0 ]; then
+            echo "::error::Tag/manifest version drift detected. Manifests must be bumped to '$TAG_VERSION' before tagging."
+            echo "Recovery: dispatch tag-release.yml from main to bump-and-tag in a single coordinated commit, or delete and re-push the tag after manually correcting the manifests."
+            exit 1
+          fi
+          echo "Tag $TAG matches all 4 manifest versions ($TAG_VERSION)."
+      - name: Build curated tarball and zip
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          PATHS=$(jq -r '.paths[]' .release-archive.json)
+          git archive --format=tar.gz \
+            --output="cross-agent-reviews-${VERSION}.tar.gz" \
+            --prefix="cross-agent-reviews-${VERSION}/" \
+            HEAD -- $PATHS
+          git archive --format=zip \
+            --output="cross-agent-reviews-${VERSION}.zip" \
+            --prefix="cross-agent-reviews-${VERSION}/" \
+            HEAD -- $PATHS
+          ls -la cross-agent-reviews-${VERSION}.*
+      - name: Upload curated artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: curated
+          path: |
+            cross-agent-reviews-*.tar.gz
+            cross-agent-reviews-*.zip
+          retention-days: 7
+
+  github-release:
+    name: Create GitHub Release (draft)
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: curated
+      - name: Classify tag (stable vs prerelease)
+        id: classify
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create draft release with curated artifacts
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
+        with:
+          generate_release_notes: true
+          draft: true
+          prerelease: ${{ steps.classify.outputs.prerelease }}
+          files: |
+            cross-agent-reviews-*.tar.gz
+            cross-agent-reviews-*.zip
