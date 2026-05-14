@@ -1,6 +1,6 @@
 # cross-agent-reviews
 
-A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross-agent spec/plan review pipeline as a single state-driven skill. One slash command — `/cr` — advances the pipeline based on a project-local state file (`.cross-agent-reviews/<slug>/`), so operators no longer paste round JSON between rounds on a single host. Reviewer rounds *audit* the artifact and author rounds *settle* findings across fresh sessions, with a strict final round, preserving cross-agent diversity by construction. v0.1.x ships local-only; install via the host's `/plugin` slash-commands (see [Install](#install) below).
+A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross-agent spec/plan review pipeline as a single state-driven skill. One slash command — `/cr` — advances the pipeline based on a project-local state file (`.cross-agent-reviews/<slug>/`), so operators no longer paste round JSON between rounds on a single host. Reviewer rounds *audit* the artifact in fresh sessions; author rounds *settle* findings without requiring a fresh session, with a strict final round preserving cross-agent diversity by construction. v0.1.x ships local-only; install via the host's `/plugin` slash-commands (see [Install](#install) below).
 
 ## How it works
 

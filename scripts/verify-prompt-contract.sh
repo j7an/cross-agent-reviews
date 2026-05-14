@@ -262,6 +262,33 @@ for f in plugin/skills/cr/rounds/*.md plugin/skills/cr/_shared/*.md; do
     "F5b: $f does not invoke helpers via raw 'python' (legacy form)"
 done
 
+# F6: Fresh-session preflight applies to audit rounds only. The router must
+# send audit rounds through preflight and skip settle rounds, the shared
+# preflight copy must not imply every round requires a fresh session, and the
+# round files must carry the same audit-vs-settle contract at their entrypoint.
+check_contains plugin/skills/cr/SKILL.md \
+  'If next stage is an audit round (`1a`, `2a`, `3a`), execute the **fresh-session preflight**' \
+  "F6a: SKILL.md routes audit rounds through fresh-session preflight"
+check_contains plugin/skills/cr/SKILL.md \
+  'If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight' \
+  "F6a: SKILL.md skips fresh-session preflight for settle rounds"
+check_contains plugin/skills/cr/_shared/preflight.md \
+  'Fresh-session preflight applies only before audit rounds (1a, 2a, 3a).' \
+  "F6b: preflight states fresh-session preflight is audit-only"
+check_not_contains plugin/skills/cr/_shared/preflight.md \
+  'per round' \
+  "F6b: preflight does not claim fresh sessions are required per round"
+for stage in 1b 2b 3b; do
+  check_contains "plugin/skills/cr/rounds/${stage}-settle.md" \
+    'Fresh-session preflight is NOT required.' \
+    "F6c: ${stage} settle file says fresh-session preflight is not required"
+done
+for stage in 1a 2a 3a; do
+  check_contains "plugin/skills/cr/rounds/${stage}-audit.md" \
+    'Fresh-session preflight' \
+    "F6d: ${stage} audit file mentions fresh-session preflight"
+done
+
 # --- Summary ---
 
 if [[ "$failures" -gt 0 ]]; then

@@ -1,8 +1,9 @@
 # Pre-flight: confirm fresh session
 
-This skill requires a fresh session to preserve cross-agent diversity.
-Before doing any work, scan THIS conversation for evidence of prior
-cross-review pipeline activity:
+Fresh-session preflight applies only before audit rounds (1a, 2a, 3a).
+Settle rounds (1b, 2b, 3b) do not run this preflight and may continue in
+the same session or a fresh one. Before an audit round, scan THIS
+conversation for evidence of prior cross-review pipeline activity:
 
 **Evidence of prior skill activation in this session:**
 - Another `cr-*` skill was activated earlier
@@ -19,13 +20,14 @@ cross-review pipeline activity:
 
 > I detected prior cross-review pipeline activity in this conversation
 > ([describe what you found]). The pipeline requires a fresh session
-> per round to maintain cross-agent diversity.
+> before audit rounds to maintain cross-agent diversity.
 >
 > Please open a new session and invoke this skill there. The JSON you've
 > already pasted will work identically in a new session.
 >
-> If you cannot start a fresh session (single-host fallback mode), reply
-> with "override fresh-session check" to proceed in degraded mode.
+> If you cannot start a fresh session before this audit round
+> (single-host fallback mode), reply "override fresh-session check" to
+> proceed in degraded mode.
 
 Wait for operator's response. Do not proceed until either (a) you are
 confident the session is fresh, or (b) the operator has explicitly
