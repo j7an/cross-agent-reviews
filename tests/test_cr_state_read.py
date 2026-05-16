@@ -440,6 +440,95 @@ def test_paste_settle_accepted_findings_diverges_from_adjudications_rejected(
     assert "accepted_findings" in result.stderr
 
 
+def test_paste_settle_accepted_finding_severity_mutation_rejected(workspace_with_1a, fixtures_dir):
+    """A pasted settle envelope's `accepted_findings` must match — by full
+    object content, not just id — what the writer would derive from the
+    paired audit. The paired 1a on disk has R1-1-001 at severity `blocker`;
+    a paste that keeps the id but mutates the embedded severity to `nit`
+    (now schema-valid for 1b) must still be rejected by the derived-content
+    equality check. Schema validation alone cannot catch this once 1b/2b
+    accept the full severity enum."""
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    base_1b["accepted_findings"][0]["severity"] = "nit"
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "accepted_findings" in result.stderr
+
+
+def test_paste_settle_rejected_finding_rejection_reason_mutation_rejected(
+    workspace_with_1a, fixtures_dir
+):
+    """A pasted settle envelope's `rejected_findings` must match what the
+    writer derives: each entry is the paired-audit finding plus a
+    `rejection_reason` equal to the matching adjudication's `reasoning`. A
+    paste that keeps the finding id but sets a `rejection_reason` diverging
+    from its adjudication must be rejected — id-set equality cannot catch it."""
+    prior_1a = json.loads(
+        (workspace_with_1a / ".cross-agent-reviews/foo/spec/round-1a.json").read_text()
+    )
+    finding = next(f for agent in prior_1a["agents"] for f in agent["findings"])
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    base_1b["adjudications"] = [
+        {"finding_id": finding["id"], "verdict": "reject", "reasoning": "Not a real problem."}
+    ]
+    base_1b["adjudication_summary"] = {"accepted": 0, "rejected": 1}
+    base_1b["accepted_findings"] = []
+    # rejection_reason deliberately differs from the adjudication's reasoning.
+    base_1b["rejected_findings"] = [{**finding, "rejection_reason": "A different reason."}]
+    base_1b["changelog"] = []
+    base_1b["self_review"] = []
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "rejected_findings" in result.stderr
+
+
+def test_paste_settle_rejected_finding_copied_content_mutation_rejected(
+    workspace_with_1a, fixtures_dir
+):
+    """The `rejected_findings` parity check must compare the *copied audit
+    content* of each entry, not just its id and `rejection_reason`. Here the
+    `rejection_reason` matches the adjudication's `reasoning` exactly, but a
+    copied audit field (`severity`) is mutated away from the paired 1a on
+    disk. A check that compared only ids + `rejection_reason` would miss this;
+    the full parsed-object equality must reject it."""
+    prior_1a = json.loads(
+        (workspace_with_1a / ".cross-agent-reviews/foo/spec/round-1a.json").read_text()
+    )
+    finding = next(f for agent in prior_1a["agents"] for f in agent["findings"])
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    base_1b["adjudications"] = [
+        {"finding_id": finding["id"], "verdict": "reject", "reasoning": "Not a real problem."}
+    ]
+    base_1b["adjudication_summary"] = {"accepted": 0, "rejected": 1}
+    base_1b["accepted_findings"] = []
+    # rejection_reason matches the adjudication's reasoning; the divergence is
+    # in a copied audit field (`severity`), which the writer would inherit
+    # verbatim from the paired 1a.
+    base_1b["rejected_findings"] = [
+        {**finding, "severity": "nit", "rejection_reason": "Not a real problem."}
+    ]
+    base_1b["changelog"] = []
+    base_1b["self_review"] = []
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "rejected_findings" in result.stderr
+
+
 def _walk_workspace_to_2b_pending(workspace, fid="R1-1-001", status="not_resolved"):
     """Advance workspace state through 1a → 1b → 2a so a 2b paste can be
     exercised. Forges a paired 2a round file with the named verification's

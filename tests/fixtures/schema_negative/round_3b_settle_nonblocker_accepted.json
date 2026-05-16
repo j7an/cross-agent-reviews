@@ -1,0 +1,38 @@
+{
+  "round": 3,
+  "stage": "3b",
+  "schema_version": 1,
+  "slug": "foo",
+  "artifact_type": "spec",
+  "artifact_path": "docs/specs/foo-design.md",
+  "emitted_at": "2026-05-07T12:30:00Z",
+  "slice_plan": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "is_fixed": false},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "is_fixed": false},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "is_fixed": false},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "is_fixed": false},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "is_fixed": false}
+  ],
+  "adjudication_summary": {"accepted": 1, "rejected": 0},
+  "adjudications": [
+    {"finding_id": "R3-1-001", "verdict": "accept", "reasoning": "Worth addressing before implementation."}
+  ],
+  "accepted_findings": [
+    {
+      "id": "R3-1-001",
+      "location": "§3.2 line 47",
+      "severity": "gap",
+      "finding": "Field foo lacks a stated default.",
+      "why_it_matters": "Implementer must guess the default value.",
+      "suggested_direction": "Specify the default for foo in §3.2."
+    }
+  ],
+  "rejected_findings": [],
+  "changelog": [
+    {"finding_id": "R3-1-001", "change_made": "Specified the default for foo in §3.2."}
+  ],
+  "self_review": [
+    {"finding_id": "R3-1-001", "resolved": true, "over_specified": false, "introduces_contradiction": false, "notes": ""}
+  ],
+  "final_status": "CORRECTED_AND_READY"
+}

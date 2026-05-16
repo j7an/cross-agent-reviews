@@ -71,22 +71,6 @@
     {"if": {"properties": {"stage": {"const": "2b"}}}, "then": {"properties": {"round": {"const": 2}}, "not": {"required": ["final_status"]}}},
     {"if": {"properties": {"stage": {"const": "3b"}}}, "then": {"properties": {"round": {"const": 3}}, "required": ["final_status"]}},
     {
-      "if": {"properties": {"stage": {"const": "1b"}}},
-      "then": {
-        "properties": {
-          "accepted_findings": {"items": {"properties": {"severity": {"enum": ["blocker", "gap"]}}}}
-        }
-      }
-    },
-    {
-      "if": {"properties": {"stage": {"const": "2b"}}},
-      "then": {
-        "properties": {
-          "accepted_findings": {"items": {"properties": {"severity": {"enum": ["blocker", "gap"]}}}}
-        }
-      }
-    },
-    {
       "if": {"properties": {"stage": {"const": "3b"}}},
       "then": {
         "properties": {
