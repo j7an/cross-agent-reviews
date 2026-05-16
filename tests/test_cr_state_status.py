@@ -150,3 +150,16 @@ def test_status_invalid_terminal_shape_shows_integrity_error(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "STATE_INTEGRITY_ERROR" in result.stdout
     assert "Terminal:" not in result.stdout
+
+
+def test_status_clean_3a_terminal_missing_round_file_no_terminal_summary(tmp_path):
+    """When a clean_3a terminal's round-3a.json is absent locally, status must
+    not print the READY_FOR_IMPLEMENTATION summary — the read/router path
+    treats the missing completed-round file as a pending import. Mirrors the
+    via_3b branch's existing round-3b.json guard."""
+    ws = _seed(tmp_path, ["1a", "1b", "2a", "2b", "3a"], "ready_for_implementation")
+    (ws / ".cross-agent-reviews/foo/spec/round-3a.json").unlink()
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "READY_FOR_IMPLEMENTATION" not in result.stdout
+    assert "round-3a.json pending import" in result.stdout

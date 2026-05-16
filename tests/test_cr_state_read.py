@@ -952,3 +952,120 @@ def test_check_spec_drift_detected(workspace_with_1a):
     assert "SPEC_DRIFT_DETECTED" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["spec_drift"] is True
+
+
+def _seed_3a_paste_prereqs(workspace, slice_plan, current_stage, completed):
+    """Forge workspace_with_1a so a 3a paste is the expected stage.
+
+    Sets the spec block to (`current_stage`, `completed`) and writes minimal
+    prior round files for 1b/2b plus a round-2a.json carrying `slice_plan`
+    (so `_check_slice_plan_frozen` can run). round-1a.json already exists
+    from `workspace_with_1a`. round-3a.json is deliberately left absent."""
+    spec_dir = workspace / ".cross-agent-reviews/foo/spec"
+    state_path = workspace / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = current_stage
+    state["spec"]["completed_rounds"] = completed
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in ("1b", "2b"):
+        (spec_dir / f"round-{stage}.json").write_text(json.dumps({"stage": stage}) + "\n")
+    (spec_dir / "round-2a.json").write_text(
+        json.dumps({"stage": "2a", "slice_plan": slice_plan}) + "\n"
+    )
+    return spec_dir
+
+
+def test_paste_3a_rejects_partial_agents_against_slice_plan(workspace_with_1a, fixtures_dir):
+    """A pasted 3a whose `agents` is a subset of `slice_plan` (e.g. only the
+    ship_ready survivors) must be rejected. The schema only requires
+    `agents` minItems:1, so the writer's agent-ids-vs-slice_plan alignment
+    check (`cr_state_write.py::_build_audit_envelope`) must be replayed on
+    paste — otherwise a partial 3a satisfies `_is_clean_3a` and wrongly
+    terminates the pipeline at ready_for_implementation, skipping 3b."""
+    envelope = json.loads((fixtures_dir / "schema_positive/round_3a_audit.json").read_text())
+    _seed_3a_paste_prereqs(
+        workspace_with_1a, envelope["slice_plan"], "round_3a_pending", ["1a", "1b", "2a", "2b"]
+    )
+    envelope["agents"] = [envelope["agents"][0]]  # drop 4 of 5 reporting agents
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 1
+    assert "slice_plan" in result.stderr
+    assert "agent_ids" in result.stderr
+
+
+def test_paste_3a_terminal_backfill_rejects_non_clean(workspace_with_1a, fixtures_dir):
+    """Backfilling round-3a.json into a clean_3a terminal: the pasted 3a must
+    actually be clean. A non-clean 3a (a blocker_found agent) would leave
+    state claiming READY_FOR_IMPLEMENTATION while the round file on disk
+    shows a blocker, with `_classify` still reporting OK off the five-round
+    terminal shape."""
+    envelope = json.loads((fixtures_dir / "schema_positive/round_3a_audit.json").read_text())
+    _seed_3a_paste_prereqs(
+        workspace_with_1a,
+        envelope["slice_plan"],
+        "ready_for_implementation",
+        ["1a", "1b", "2a", "2b", "3a"],
+    )
+    envelope["agents"][0]["status"] = "blocker_found"
+    envelope["agents"][0]["findings"] = [
+        {
+            "id": "R3-1-001",
+            "location": "§3",
+            "severity": "blocker",
+            "finding": "unresolved blocker",
+            "why_it_matters": "ships broken",
+            "suggested_direction": "fix it",
+        }
+    ]
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 1
+    assert "clean-3a parity" in result.stderr
+
+
+def test_paste_3a_terminal_backfill_accepts_clean(workspace_with_1a, fixtures_dir):
+    """Backfilling a genuinely clean round-3a.json into a clean_3a terminal
+    succeeds — the parity check rejects only divergent pastes."""
+    envelope = json.loads((fixtures_dir / "schema_positive/round_3a_audit.json").read_text())
+    spec_dir = _seed_3a_paste_prereqs(
+        workspace_with_1a,
+        envelope["slice_plan"],
+        "ready_for_implementation",
+        ["1a", "1b", "2a", "2b", "3a"],
+    )
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
+    )
+    assert result.returncode == 0, result.stderr
+    assert (spec_dir / "round-3a.json").exists()
+
+
+def test_pending_import_uses_canonical_round_order(workspace):
+    """A terminal bootstrap may carry completed_rounds in any order
+    (`terminal_shape` is order-insensitive). The pending-import scan must
+    pick the earliest-missing stage by canonical pipeline order, so import
+    recovery requests 1a before the rounds that depend on it — not 3a just
+    because it leads a reversed `completed_rounds` array."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    (slug_dir / "spec").mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": ["3a", "2b", "2a", "1b", "1a"],
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["pending_import"] is True
+    assert out["pending_stage"] == "1a"

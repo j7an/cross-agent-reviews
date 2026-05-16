@@ -58,7 +58,16 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
             lines.append(f"    {stage:<3}  —")
     if current == "ready_for_implementation":
         if shape == "clean_3a":
-            lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
+            # Gate the terminal summary on the clean-3a round file being
+            # present locally, mirroring the via_3b branch below. The read/
+            # router path treats a completed-but-missing round file as a
+            # pending import; printing "READY_FOR_IMPLEMENTATION" while
+            # round-3a.json is absent would contradict that path.
+            rp = artifact_dir / "round-3a.json"
+            if rp.exists():
+                lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
+            else:
+                lines.append("  Terminal:  (round-3a.json pending import)")
         elif shape == "via_3b":
             rp = artifact_dir / "round-3b.json"
             if rp.exists():
