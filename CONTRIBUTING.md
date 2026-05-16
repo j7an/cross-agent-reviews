@@ -35,6 +35,25 @@ The first commit MUST introduce the test file; the second commit MUST introduce 
 
 Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `3`, deferred from `85` until subprocess-coverage instrumentation is fixed — see the inline TODO in pyproject.toml). The pre-push hook (`.pre-commit-config.yaml`) does not pass `--cov-fail-under` on the CLI; it picks up the value from pyproject.toml so the gate has one source of truth. Restoring the 85% target is tracked separately.
 
+## Type checking (Pyright)
+
+Pyright policy is declared explicitly in `[tool.pyright]` in `pyproject.toml`
+(`typeCheckingMode`, `include`, `pythonVersion`, `extraPaths`, venv settings).
+That block is the authoritative policy: repo-root `pyright`, a Homebrew/global
+Pyright install, and IDE/LSP integrations should all respect it.
+
+Editor-local settings that enable a stricter `typeCheckingMode` may surface
+additional warnings — those are editor-local preferences, **not** repo policy,
+and are not grounds for failing repo-owned code.
+
+Pyright is a manual/IDE tool; it is intentionally not a `uv` dependency or a
+pre-commit hook. Run it directly from the repo root when you want to check
+types:
+
+```bash
+pyright            # uses [tool.pyright] from pyproject.toml
+```
+
 ## Conventional commits
 
 Commits follow the pattern `<type>(<scope>): <subject>`. Types we use:

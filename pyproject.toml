@@ -99,13 +99,26 @@ line-ending = "auto"
 docstring-code-format = true
 
 [tool.pyright]
-# Mirror pytest's pythonpath so Pyright resolves `from _cr_lib import ...`
-# the same way the test runtime does (the helpers live outside any
-# Pyright-discoverable package because Shape A uses script-mode flat imports).
+# Repo Pyright policy. Single source of truth shared by repo-root CLI runs,
+# Homebrew/global Pyright, and IDE/LSP integrations. This pins the repo's
+# current effective policy; it is NOT a move to strict typing.
+typeCheckingMode = "standard"
+# Match the language floor declared in `requires-python` so `from datetime
+# import UTC` (added in 3.11) is recognized.
+pythonVersion = "3.11"
+
+# Scope Pyright to repo-owned Python. Generated/local-only paths (.venv,
+# .worktrees/, dist/, cross_agent_reviews.egg-info/, and caches) stay out of
+# analysis by construction because they are outside this include set, so no
+# custom `exclude` block is needed (and adding one would replace Pyright's
+# default excludes).
+include = ["plugin/skills/cr/_helpers", "tests", "sitecustomize.py"]
+
+# Mirror pytest's pythonpath so Pyright resolves flat `from _cr_lib import ...`
+# script-mode imports the same way the test runtime does (the helpers live
+# outside any Pyright-discoverable package because Shape A uses script-mode
+# flat imports).
 extraPaths = ["plugin/skills/cr/_helpers"]
 # Point at the project venv so jsonschema/referencing resolve from source.
 venvPath = "."
 venv = ".venv"
-# Match the language floor declared in `requires-python` so `from datetime
-# import UTC` (added in 3.11) is recognized.
-pythonVersion = "3.11"
