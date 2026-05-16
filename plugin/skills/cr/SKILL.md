@@ -1,6 +1,6 @@
 ---
 name: cr
-description: State-driven 3-round / 6-step cross-agent spec/plan review pipeline. Use `/cr` to advance the active pipeline. Reads `.cross-agent-reviews/<slug>/state.json`, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b), validates output via JSON Schema, and persists state. Audit rounds (1a, 2a, 3a) require fresh sessions; settle rounds (1b, 2b, 3b) do not. Supports cross-host paste-import for distributed reviews.
+description: State-driven 3-round / 6-step cross-agent spec/plan review pipeline. Use `/cr` to advance the active pipeline. Reads `.cross-agent-reviews/<slug>/state.json`, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b, terminating early when round 3a is clean), validates output via JSON Schema, and persists state. Audit rounds (1a, 2a, 3a) require fresh sessions; settle rounds (1b, 2b, 3b) do not. Supports cross-host paste-import for distributed reviews.
 ---
 
 [Full attribution](_shared/attribution.md)
@@ -71,7 +71,13 @@ If `integrity == "STATE_INTEGRITY_ERROR"`, halt with `BLOCKED:state-integrity` a
 
 If `pending_import: true` in the read output, the operator switched hosts; route to §3 paste-import. **This check runs before the `ready_for_implementation` check below**: a terminal cross-host handoff can leave `state.<artifact_type>.current_stage == "ready_for_implementation"` with `completed_rounds` including `3b` while `round-3b.json` has not yet been pasted on this host (see Phase 6's `_classify`: `pending_import` flips true whenever any completed stage's round file is missing). Reading `final_status` from `round-3b.json` in that case would fail — the paste-import branch is what supplies the missing round file.
 
-If `state.<artifact_type>.current_stage == "ready_for_implementation"`, the pipeline has already terminated for this artifact. Do NOT proceed to §3 or §4. Emit the third bullet of §5's round-completion message ("Pipeline complete. final_status: ...") by reading `final_status` from `<state-dir>/<slug>/<artifact_type>/round-3b.json` directly (the `cr_state_read.py` payload only carries state and integrity fields; `final_status` lives in the round-3b envelope per Phase 5), and stop. A rerun of `/cr` after completion is a status query, not a new dispatch.
+If `state.<artifact_type>.current_stage == "ready_for_implementation"`, the pipeline has already terminated for this artifact. Do NOT proceed to §3 or §4. Classify the terminal shape from `state.<artifact_type>.completed_rounds`:
+
+- **via 3b** — `completed_rounds` is the six-round set `{1a, 1b, 2a, 2b, 3a, 3b}`. Read `final_status` from `<state-dir>/<slug>/<artifact_type>/round-3b.json` directly (the `cr_state_read.py` payload carries only state and integrity fields; `final_status` lives in the round-3b envelope per Phase 5), then emit §5's terminal message.
+- **clean 3a** — `completed_rounds` is the five-round set `{1a, 1b, 2a, 2b, 3a}` (no `3b`). `final_status` is the constant `READY_FOR_IMPLEMENTATION`; do NOT read `round-3b.json` — it does not exist for a clean-3a termination. Emit §5's clean-3a terminal message.
+- **invalid** — `completed_rounds` is neither set. `cr_state_read.py` reports `integrity == "STATE_INTEGRITY_ERROR"` (caught by the integrity check above); halt with `BLOCKED:state-integrity`. Never infer a `final_status` for a malformed terminal state.
+
+A rerun of `/cr` after completion is a status query, not a new dispatch.
 
 For **plan rounds only**, run a spec-drift check before dispatch:
 
@@ -123,10 +129,14 @@ halt with `BLOCKED:validation` for operator intervention (§6.5 of spec).
 After `cr_state_write.py` succeeds, emit one of these messages to the
 operator (per §9.2 of the spec):
 
-- After audit round (1a, 2a, 3a) — next is settle:
+- After an audit round whose next stage is a settle round — 1a, 2a, and a **non-clean 3a** (one or more `blocker_found` agents):
   > Round Na complete (M findings). Run /cr to continue with round Nb.
   > A fresh session is not required for settle rounds; you may continue
   > in this session or open a new one.
+- After a **clean 3a** (every agent `ship_ready`, zero findings) — the pipeline terminates without round 3b:
+  > Round 3a complete — final reviewer audit found zero blockers. Pipeline
+  > complete. final_status: READY_FOR_IMPLEMENTATION (clean 3a — round 3b
+  > skipped). The artifact is ready for implementation.
 - After settle round (1b, 2b) — next is audit, fresh session mandatory:
   > Round Nb complete (P accepted, Q rejected). Open a fresh session and
   > run /cr to continue with round (N+1)a (a fresh session is required
