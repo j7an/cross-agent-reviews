@@ -17,7 +17,7 @@ concurrency:
 jobs:
   cooldown:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    uses: j7an/shared-workflows/.github/workflows/dependency-cooldown.yml@365119edbe2b1c7339d7727d9e8d021784e5bc01  # v2.5.2
+    uses: j7an/shared-workflows/.github/workflows/dependency-cooldown.yml@f59942427bc49f29363f889f1365a77303f5a76f  # v2.5.3
     with:
       auto_merge: false
       cooldown_days: 7
