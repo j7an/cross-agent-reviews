@@ -1,0 +1,10 @@
+{
+  "stage": "3b",
+  "adjudications": [
+    {"finding_id": "R3-1-001", "verdict": "reject",
+     "reasoning": "On final adjudication this is not a true blocker; the implementer can proceed without it."}
+  ],
+  "rejected_findings": [],
+  "changelog": [],
+  "self_review": []
+}
