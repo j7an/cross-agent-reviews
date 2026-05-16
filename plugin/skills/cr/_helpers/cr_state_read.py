@@ -116,8 +116,11 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
     ):
         rb = artifact_dir / "round-3b.json"
         if rb.exists():
-            r3b = json.loads(rb.read_text())
-            if r3b.get("final_status") == "CORRECTED_PENDING_VERIFICATION":
+            try:
+                r3b = json.loads(rb.read_text())
+            except json.JSONDecodeError:
+                r3b = None
+            if r3b is not None and r3b.get("final_status") == "CORRECTED_PENDING_VERIFICATION":
                 return {
                     "integrity": "STATE_INTEGRITY_ERROR",
                     "integrity_reason": "verification_skipped",
