@@ -156,6 +156,22 @@ def test_status_invalid_terminal_shape_shows_integrity_error(tmp_path):
     assert "Terminal:" not in result.stdout
 
 
+def test_status_via_3b_terminal_with_cpv_is_integrity_error(tmp_path):
+    """A via_3b terminal whose round-3b.json has final_status==CORRECTED_PENDING_VERIFICATION
+    must report STATE_INTEGRITY_ERROR — the artifact was corrected but never
+    verified, so the terminal state is inconsistent."""
+    ws = _seed(
+        tmp_path,
+        ["1a", "1b", "2a", "2b", "3a", "3b"],
+        "ready_for_implementation",
+        final_status="CORRECTED_PENDING_VERIFICATION",
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "STATE_INTEGRITY_ERROR" in result.stdout
+    assert "Terminal:" not in result.stdout
+
+
 def test_status_clean_3a_terminal_missing_round_file_no_terminal_summary(tmp_path):
     """When a clean_3a terminal's round-3a.json is absent locally, status must
     not print the READY_FOR_IMPLEMENTATION summary — the read/router path
@@ -209,8 +225,8 @@ def test_status_via_3c_terminal(tmp_path):
     )
     result = run(["--slug", "foo"], cwd=ws)
     assert result.returncode == 0, result.stderr
-    assert "3c" in result.stdout
-    assert "completed" in result.stdout
+    # "3c " (:<3 pad) + "  completed" → "3c   completed" in the timeline row
+    assert "3c   completed" in result.stdout
     assert "Terminal:  CORRECTED_AND_READY  (via round 3c" in result.stdout
 
 

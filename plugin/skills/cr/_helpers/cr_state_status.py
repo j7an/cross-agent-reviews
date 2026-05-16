@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -91,7 +92,19 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         elif shape == "clean_3a":
             lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
         elif shape == "via_3b":
-            lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (via round 3b - zero accepted)")
+            rb = artifact_dir / "round-3b.json"
+            cpv = False
+            if rb.exists():
+                with contextlib.suppress(json.JSONDecodeError):
+                    cpv = (
+                        json.loads(rb.read_text()).get("final_status")
+                        == "CORRECTED_PENDING_VERIFICATION"
+                    )
+            if not cpv:
+                lines.append(
+                    "  Terminal:  READY_FOR_IMPLEMENTATION  (via round 3b - zero accepted)"
+                )
+            # cpv==True: no Terminal line — _integrity_for surfaces the error instead
         elif shape == "via_3c":
             final_status = json.loads((artifact_dir / "round-3c.json").read_text())["final_status"]
             lines.append(f"  Terminal:  {final_status}  (via round 3c - final verification passed)")
