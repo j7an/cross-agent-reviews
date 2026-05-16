@@ -341,7 +341,12 @@ def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | N
         err = _check_verification_set(envelope["verifications"], paired_3b["accepted_findings"])
         if err is not None:
             return err
-        # result must agree with the verification/regression content
+        # result must agree with the verification/regression content.
+        # Defensive check: both divergence directions are blocked upstream
+        # before this point (result!="passed" is rejected by _cmd_paste;
+        # result="passed"+not_resolved is rejected by schema allOf), so this
+        # branch is currently unreachable via paste. Kept as a guard against
+        # future schema relaxation.
         all_resolved = all(v["status"] == "resolved" for v in envelope["verifications"])
         no_regressions = not envelope["regression_findings"]
         expected_result = "passed" if all_resolved and no_regressions else "failed"
@@ -618,8 +623,9 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                     f"state integrity: bootstrap state.{block_name} has "
                     f"current_stage={stage!r} which is not legal for a fresh "
                     "bootstrap (must be 'round_1a_pending' with empty "
-                    "completed_rounds, or 'ready_for_implementation' with "
-                    "all rounds completed)"
+                    "completed_rounds, 'round_3c_pending' with "
+                    "completed_rounds=['1a','1b','2a','2b','3a','3b'], or "
+                    "'ready_for_implementation' with all rounds completed)"
                 )
         if instance.get("slug") != slug:
             return _err(

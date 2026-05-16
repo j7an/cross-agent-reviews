@@ -1,6 +1,5 @@
 """Tests for cr_state_read.py."""
 
-import hashlib
 import json
 import os
 import shutil
@@ -9,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _cr_lib import compute_content_hash
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPERS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
@@ -1207,11 +1207,6 @@ def test_pending_import_uses_canonical_round_order(workspace):
 # ---------------------------------------------------------------------------
 
 
-def compute_content_hash(path: Path) -> str:
-    """Compute the sha256 content hash of an artifact file (matches _cr_lib)."""
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _walk_workspace_to_3c_pending(workspace):
     """Advance workspace state through 1a → 1b → 2a → 2b → 3a(blocker) → 3b(accept)
     so that a 3c paste is the expected stage. Returns (spec_dir, state_path)."""
@@ -1373,3 +1368,33 @@ def test_paste_3c_backfill_rejects_stale_state_hash(via_3c_missing_round3c):
     assert result.returncode == 1
     assert "content_hash" in result.stderr
     assert "inconsistent" in result.stderr
+
+
+def test_paste_3c_rejects_verification_set_mismatch(host_b_at_3c_pending):
+    """_paste_cross_round_invariants rejects a 3c whose verifications do not
+    cover exactly the round-3b accepted_findings: a finding_id not in
+    accepted_findings causes 'not accepted by 3b'."""
+    passing_3c = build_passing_3c_for(host_b_at_3c_pending)
+    # Mutate the single verification to reference a finding id that is NOT in
+    # round-3b accepted_findings, triggering the 'verifies finding id(s) not
+    # accepted by 3b' rejection in _check_verification_set.
+    passing_3c["verifications"][0]["round_3a_finding_id"] = "R3-2-999"
+    result = run_paste(host_b_at_3c_pending, slug="foo", stdin=json.dumps(passing_3c))
+    assert result.returncode == 1
+    # The error comes from _check_verification_set; it emits EITHER
+    # "missing a verification" (for the omitted accepted id) OR
+    # "not accepted by 3b" (for the injected unknown id).
+    assert "missing a verification" in result.stderr or "not accepted by 3b" in result.stderr
+
+
+# NOTE: the _paste_cross_round_invariants 3c result-divergence check (lines
+# 344-352) is defensive and unreachable via paste:
+#   • result="failed" + all-resolved verifications: caught upstream by the
+#     explicit "only a passing round-3c.json is paste-importable" check
+#     (result != "passed") before _paste_cross_round_invariants is called.
+#   • result="passed" + not_resolved verification: caught by schema validation
+#     (the allOf/if-then enforces status==resolved on every verification when
+#     result=="passed") before _paste_cross_round_invariants is called.
+# A test for either path would be test theater — it cannot reach the branch
+# it claims to cover. The check is retained as a defense-in-depth guard
+# against future schema relaxation.
