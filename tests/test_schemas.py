@@ -150,6 +150,38 @@ def test_state_bad_stage_fails(schema_dir, registry, fixtures_dir):
     _expect_invalid(schema_dir, registry, "state.schema.json", instance)
 
 
+def test_state_accepts_round_3c_pending(schema_dir, registry):
+    instance = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "a" * 64,
+            "current_stage": "round_3c_pending",
+            "completed_rounds": ["1a", "1b", "2a", "2b", "3a", "3b"],
+            "started_at": "2026-05-16T12:00:00Z",
+            "last_updated_at": "2026-05-16T12:00:00Z",
+        },
+    }
+    _validate(schema_dir, registry, "state.schema.json", instance)
+
+
+def test_state_accepts_3c_completed_round(schema_dir, registry):
+    instance = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "a" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": ["1a", "1b", "2a", "2b", "3a", "3b", "3c"],
+            "started_at": "2026-05-16T12:00:00Z",
+            "last_updated_at": "2026-05-16T12:00:00Z",
+        },
+    }
+    _validate(schema_dir, registry, "state.schema.json", instance)
+
+
 # --- round-audit.schema.json ---
 
 

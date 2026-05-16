@@ -25,10 +25,11 @@
         "round_2b_pending",
         "round_3a_pending",
         "round_3b_pending",
+        "round_3c_pending",
         "ready_for_implementation"
       ]
     },
-    "completed_round": {"type": "string", "enum": ["1a", "1b", "2a", "2b", "3a", "3b"]},
+    "completed_round": {"type": "string", "enum": ["1a", "1b", "2a", "2b", "3a", "3b", "3c"]},
     "iso8601_utc": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
     "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "artifact_block": {
