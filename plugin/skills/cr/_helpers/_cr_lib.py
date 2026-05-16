@@ -37,6 +37,7 @@ SCHEMA_FILES = (
     "state.schema.json",
     "round-audit.schema.json",
     "round-settle.schema.json",
+    "final-verification.schema.json",
 )
 
 

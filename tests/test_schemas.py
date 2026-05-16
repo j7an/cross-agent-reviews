@@ -17,6 +17,7 @@ SCHEMA_FILES = [
     "state.schema.json",
     "round-audit.schema.json",
     "round-settle.schema.json",
+    "final-verification.schema.json",
 ]
 
 
@@ -282,3 +283,68 @@ def test_round_3b_corrected_and_ready_value_removed(schema_dir, registry, fixtur
     instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
     instance["final_status"] = "CORRECTED_AND_READY"
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+# --- final-verification.schema.json ---
+
+
+def test_final_verification_passed_passes(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    _validate(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_passed_with_unresolved_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_negative/final_verification_passed_unresolved.json").read_text()
+    )
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_failed_must_omit_final_status(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["result"] = "failed"
+    instance["verifications"] = [
+        {"round_3a_finding_id": "R3-1-001", "status": "not_resolved", "evidence": "x"}
+    ]
+    # final_status still present -> invalid for a failed envelope
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_passed_with_regression_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["regression_findings"] = [
+        {
+            "id": "R3C-001",
+            "location": "§6",
+            "severity": "blocker",
+            "finding": "edit broke the cross-reference",
+            "why_it_matters": "implementer follows a dead link",
+            "suggested_direction": "repoint the reference",
+        }
+    ]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_bad_regression_id_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["result"] = "failed"
+    del instance["final_status"]
+    instance["regression_findings"] = [
+        {
+            "id": "R3-1-001",
+            "location": "§6",
+            "severity": "blocker",
+            "finding": "x",
+            "why_it_matters": "y",
+            "suggested_direction": "z",
+        }
+    ]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
