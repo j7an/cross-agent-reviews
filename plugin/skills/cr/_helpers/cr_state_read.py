@@ -718,6 +718,29 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "clean-3a parity: state is a via_3b terminal but the pasted "
                 "round-3a.json is clean (a clean 3a terminates without running 3b)"
             )
+    # 3b parity for terminal backfill: when the pending import is the 3b
+    # round of a `ready_for_implementation` block, the pasted 3b's
+    # final_status MUST agree with the block's terminal shape. A
+    # ready_for_implementation terminal whose completed rounds are 1a..3b is
+    # a via_3b terminal, which asserts 3b was clean (final_status
+    # READY_FOR_IMPLEMENTATION). An accepted 3b carries
+    # CORRECTED_PENDING_VERIFICATION and implies a via_3c terminal — 3c must
+    # still run — so a CPV 3b contradicts the bootstrapped via_3b shape. The
+    # state-update block below is skipped for a pending backfill, so without
+    # this check a CPV round-3b.json gets written into a via_3b terminal,
+    # leaving an immediately-invalid verification_skipped state.
+    if (
+        instance["stage"] == "3b"
+        and block["current_stage"] == "ready_for_implementation"
+        and terminal_shape(block["completed_rounds"]) == "via_3b"
+        and instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    ):
+        return _err(
+            "3b parity: state is a via_3b terminal but the pasted "
+            "round-3b.json is CORRECTED_PENDING_VERIFICATION (an accepted "
+            "3b implies a via_3c terminal — final verification 3c must "
+            "still run — not a via_3b terminal)"
+        )
     # 3c artifact-bytes parity: a passing round-3c.json pins the bytes it
     # verified. The receiving host must hold those exact bytes, else the
     # via_3c terminal would claim a content_hash that disagrees with the
@@ -745,6 +768,17 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         block["completed_rounds"] = sorted({*block["completed_rounds"], instance["stage"]})
         if instance["stage"] == "3a" and _is_clean_3a(instance):
             next_stage = "ready_for_implementation"
+        elif (
+            instance["stage"] == "3b"
+            and instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+        ):
+            # Mirror the conditional 3b routing in `cr_state_write.py`: an
+            # accepted 3b (the schema biconditional forces every accepted 3b
+            # to carry CORRECTED_PENDING_VERIFICATION) must run final
+            # verification 3c, not terminate. Routing it straight to
+            # ready_for_implementation would yield an immediately-invalid
+            # verification_skipped integrity state.
+            next_stage = "round_3c_pending"
         else:
             next_stage = {
                 "1a": "round_1b_pending",

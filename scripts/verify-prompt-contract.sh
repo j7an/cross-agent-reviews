@@ -171,7 +171,7 @@ done
 # guaranteed to be picked up. Positional arrays exist in Bash 3.2.
 seen_schema_ids=()
 seen_schema_files=()
-for schema in finding verification adjudication changelog-entry self-review-entry state round-audit round-settle; do
+for schema in finding verification adjudication changelog-entry self-review-entry state round-audit round-settle final-verification; do
   f="plugin/skills/cr/_shared/schema/${schema}.schema.json"
   check_file_exists "$f" "Schema: ${schema}"
   if [[ -f "$f" ]]; then

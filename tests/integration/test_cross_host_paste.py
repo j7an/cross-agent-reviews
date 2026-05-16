@@ -472,6 +472,133 @@ def test_cross_host_corrected_3b_then_3c(tmp_path):
     assert set(state_a["spec"]["completed_rounds"]) == {"1a", "1b", "2a", "2b", "3a", "3b", "3c"}
 
 
+def _walk_host_to_3b_pending(host):
+    """Init a host and write rounds 1a..3a locally so it sits at
+    round_3b_pending with all prior round files on disk. The 3a round
+    carries a blocker (round_3a_input_blocker.json) so the pipeline routes
+    to round_3b_pending rather than terminating at ready_for_implementation."""
+    init = run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host,
+        stdin="",
+    )
+    assert init.returncode == 0, init.stderr
+    for stage_input in [
+        "round_1a_input.json",
+        "round_1b_input.json",
+        "round_2a_input.json",
+        "round_2b_input.json",
+        "round_3a_input_blocker.json",
+    ]:
+        r = run(
+            WRITE,
+            [
+                "--slug",
+                "foo",
+                "--artifact-type",
+                "spec",
+                "--artifact-path",
+                "docs/specs/foo-design.md",
+                "--input",
+                str(REPO_ROOT / "tests/fixtures/state_write_inputs" / stage_input),
+            ],
+            cwd=host,
+        )
+        assert r.returncode == 0, f"{stage_input}: {r.stderr}"
+
+
+def test_forward_paste_accepted_3b_routes_to_round_3c_pending(tmp_path):
+    """Forward import of an accepted (CORRECTED_PENDING_VERIFICATION) 3b:
+    Host A drives 1a→3b-accept; Host B walks 1a..3a locally and sits at
+    round_3b_pending. Pasting Host A's accepted round-3b.json must route
+    Host B to round_3c_pending — NOT ready_for_implementation, which would
+    be an immediately-invalid verification_skipped integrity state.
+
+    This exercises the `pending is None` forward path of `_cmd_paste`,
+    which must mirror the conditional 3b routing in `cr_state_write.py`."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host B: walk 1a..3a locally so it genuinely sits at round_3b_pending
+    # with all prior round files on disk (forward path, not backfill).
+    _walk_host_to_3b_pending(host_b)
+
+    # Host A: drive 1a→3b-accept and capture the round envelopes. Done after
+    # Host B's walk so Host A's 3b `emitted_at` is no earlier than Host B's
+    # local round files — keeping the pasted state's last_updated_at >= every
+    # round's emitted_at (a state-integrity invariant checked on read).
+    envelopes = _drive_host_to_3c_pending(host_a)
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "round_3b_pending"
+
+    # Host B: paste-import Host A's accepted round-3b.json.
+    paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=envelopes["3b"])
+    assert paste.returncode == 0, paste.stderr
+
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "round_3c_pending"
+    assert "3b" in state_b["spec"]["completed_rounds"]
+
+    # A subsequent read must NOT report verification_skipped — the state is
+    # a valid pre-3c handoff, not a broken via_3b terminal.
+    read = run(READ, ["--slug", "foo", "--artifact-type", "spec"], cwd=host_b)
+    assert read.returncode == 0, read.stderr
+    out = json.loads(read.stdout)
+    assert out["integrity"] == "OK"
+    assert "verification" not in read.stderr.lower()
+
+
+def test_backfill_via_3b_terminal_rejects_cpv_3b_paste(tmp_path):
+    """Backfill parity guard: a host bootstrapped with a via_3b terminal
+    (ready_for_implementation + completed rounds 1a..3b) asserts 3b was
+    clean (READY_FOR_IMPLEMENTATION). Pasting a CORRECTED_PENDING_VERIFICATION
+    round-3b.json into that terminal contradicts the bootstrapped shape — a
+    CPV 3b implies a via_3c terminal, not via_3b. The paste must FAIL with a
+    non-zero exit and leave no invalid state behind."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: drive 1a→3b-accept to obtain a genuine accepted (CPV) 3b envelope.
+    envelopes = _drive_host_to_3c_pending(host_a)
+
+    # Host B: walk 1a..3a locally so the real prior round files are on disk
+    # (the 3b paste replays cross-round invariants against round-3a.json, so
+    # genuine round files are required — stubs would crash the invariant
+    # replay before the parity guard is reached).
+    _walk_host_to_3b_pending(host_b)
+    # Hand-edit Host B's state into a via_3b terminal: ready_for_implementation
+    # with completed rounds 1a..3b, but round-3b.json absent on disk so 3b is
+    # the earliest completed-but-missing stage (the pending-import target).
+    state_path = host_b / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    spec_dir = host_b / ".cross-agent-reviews/foo/spec"
+
+    # Paste Host A's accepted (CPV) round-3b.json into the via_3b terminal.
+    paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=envelopes["3b"])
+    assert paste.returncode != 0, paste.stdout
+    assert "via_3b" in paste.stderr or "via_3c" in paste.stderr
+    # The contradicting round file must not be written.
+    assert not (spec_dir / "round-3b.json").exists()
+
+
 def test_cross_host_via_3b_with_cpv_is_integrity_error(tmp_path):
     """A host bootstrapped with a via_3b terminal whose round-3b.json carries
     CORRECTED_PENDING_VERIFICATION (3b accepted a blocker but 3c never ran)
