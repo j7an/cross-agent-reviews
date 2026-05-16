@@ -863,6 +863,73 @@ def test_bootstrap_paste_rejects_invalid_terminal_shape(workspace):
     assert "terminal" in result.stderr.lower()
 
 
+def _seed_terminal_state(workspace, completed, last_updated="2026-05-07T10:00:00Z"):
+    """Write a state.json at ready_for_implementation under slug 'foo' with the
+    given completed_rounds, plus a minimal round file per completed stage so
+    the pending-import scan does not flag them."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": last_updated,
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        (spec_dir / f"round-{stage}.json").write_text(
+            json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+        )
+
+
+def test_read_clean_3a_terminal_is_ok_no_pending_import(workspace):
+    """A clean_3a terminal (five rounds, no 3b) reads as integrity OK with no
+    pending import — the absent round-3b.json is never flagged."""
+    _seed_terminal_state(workspace, ["1a", "1b", "2a", "2b", "3a"])
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["integrity"] == "OK"
+    assert out["pending_import"] is False
+    assert out["integrity_reason"] is None
+
+
+def test_read_invalid_terminal_shape_is_integrity_error(workspace):
+    """ready_for_implementation with a completed_rounds set that is neither
+    terminal shape reports STATE_INTEGRITY_ERROR with the shape-specific
+    reason and diagnostic — not the stale-state message."""
+    _seed_terminal_state(workspace, ["1a", "2a", "3a"])
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 3
+    assert "neither terminal shape" in result.stderr
+    assert "last_updated_at" not in result.stderr
+    out = json.loads(result.stdout)
+    assert out["integrity"] == "STATE_INTEGRITY_ERROR"
+    assert out["integrity_reason"] == "invalid_terminal_shape"
+
+
+def test_read_stale_state_keeps_stale_reason(workspace):
+    """Regression: a stale state.json (last_updated_at older than the newest
+    round file's emitted_at) still reports integrity_reason 'stale_state' and
+    the original diagnostic."""
+    _seed_terminal_state(
+        workspace, ["1a", "1b", "2a", "2b", "3a", "3b"], last_updated="2026-05-07T08:00:00Z"
+    )
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 3
+    assert "last_updated_at" in result.stderr
+    out = json.loads(result.stdout)
+    assert out["integrity"] == "STATE_INTEGRITY_ERROR"
+    assert out["integrity_reason"] == "stale_state"
+
+
 def test_check_spec_drift_detected(workspace_with_1a):
     state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
     state = json.loads(state_path.read_text())

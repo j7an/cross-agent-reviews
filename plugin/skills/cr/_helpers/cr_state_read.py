@@ -84,8 +84,28 @@ def _read_round_files(artifact_dir: Path) -> dict[str, dict]:
 def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
     block = state.get(artifact_type)
     if block is None:
-        return {"integrity": "OK", "pending_import": False, "pending_stage": None}
+        return {
+            "integrity": "OK",
+            "integrity_reason": None,
+            "pending_import": False,
+            "pending_stage": None,
+        }
     completed = block.get("completed_rounds", [])
+    # Invalid terminal shape: ready_for_implementation with a completed_rounds
+    # set that is neither terminal shape. An integrity error invalidates every
+    # subsequent routing decision, so this is checked before pending-import
+    # detection (consistent with SKILL.md §2's "check this before any other
+    # branch").
+    if (
+        block.get("current_stage") == "ready_for_implementation"
+        and terminal_shape(completed) == "invalid"
+    ):
+        return {
+            "integrity": "STATE_INTEGRITY_ERROR",
+            "integrity_reason": "invalid_terminal_shape",
+            "pending_import": False,
+            "pending_stage": None,
+        }
     rounds_on_disk = _read_round_files(artifact_dir)
     issues: list[str] = []
     pending_stage: str | None = None
@@ -110,11 +130,13 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
         if block["last_updated_at"] < local_max:
             return {
                 "integrity": "STATE_INTEGRITY_ERROR",
+                "integrity_reason": "stale_state",
                 "pending_import": pending_stage is not None,
                 "pending_stage": pending_stage,
             }
     return {
         "integrity": "ORPHAN_DISCARDED" if "ORPHAN_DISCARDED" in issues else "OK",
+        "integrity_reason": None,
         "pending_import": pending_stage is not None,
         "pending_stage": pending_stage,
     }
@@ -127,10 +149,15 @@ def _cmd_read(repo_root: Path, slug: str, artifact_type: str) -> int:
     state = json.loads(state_path.read_text())
     artifact_dir = state_dir(repo_root) / slug / artifact_type
     classification = _classify(state, artifact_type, artifact_dir)
-    if classification["integrity"] == "STATE_INTEGRITY_ERROR":
-        sys.stdout.write(canonical_json({"state": state, **classification}))
-        return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
     sys.stdout.write(canonical_json({"state": state, **classification}))
+    if classification["integrity"] == "STATE_INTEGRITY_ERROR":
+        if classification["integrity_reason"] == "invalid_terminal_shape":
+            return _err(
+                "STATE_INTEGRITY_ERROR: current_stage is ready_for_implementation "
+                "but completed_rounds is neither terminal shape",
+                code=3,
+            )
+        return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
     return 0
 
 
