@@ -43,6 +43,16 @@ NEXT_STAGE = {
 }
 
 
+def _is_clean_3a(envelope: dict) -> bool:
+    """True when every agent in a 3a envelope is ship_ready (zero findings).
+
+    Per round-audit.schema.json, ship_ready implies an empty findings list, so
+    'all agents ship_ready' is equivalent to 'combined findings empty'. status
+    is the single authoritative field, so it is what we check.
+    """
+    return all(a["status"] == "ship_ready" for a in envelope["agents"])
+
+
 def _err(msg: str) -> int:
     print(f"ERROR: {msg}", file=sys.stderr)
     return 1
@@ -464,7 +474,10 @@ def main() -> int:
     atomic_write(artifact_dir / f"round-{stage}.json", body)
 
     block["completed_rounds"] = sorted({*block["completed_rounds"], stage})
-    block["current_stage"] = NEXT_STAGE[stage]
+    if stage == "3a" and _is_clean_3a(envelope):
+        block["current_stage"] = "ready_for_implementation"
+    else:
+        block["current_stage"] = NEXT_STAGE[stage]
     block["last_updated_at"] = envelope["emitted_at"]
     # Settle rounds (1b/2b/3b) edit the artifact in place (per the round
     # markdown procedures). Refresh `block.content_hash` to the post-edit

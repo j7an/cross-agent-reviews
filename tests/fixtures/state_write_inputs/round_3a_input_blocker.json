@@ -1,0 +1,17 @@
+{
+  "stage": "3a",
+  "agents": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "status": "blocker_found",
+     "findings": [
+       {"location": "§4.1 line 88", "severity": "blocker",
+        "finding": "Round 3a fixture blocker for the via-3b regression path.",
+        "why_it_matters": "Exercises the non-clean 3a -> round_3b_pending transition.",
+        "suggested_direction": "Adjudicated and rejected by round 3b in the paired fixture."}
+     ],
+     "round_1_verifications": []},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "status": "ship_ready", "findings": [], "round_1_verifications": []},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "status": "ship_ready", "findings": [], "round_1_verifications": []}
+  ]
+}

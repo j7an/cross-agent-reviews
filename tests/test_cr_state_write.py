@@ -678,6 +678,76 @@ def test_rejects_state_with_schema_violation_missing_required_field(workspace_wi
     assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-1a.json").exists()
 
 
+def _walk_to_3a_pending(workspace):
+    """Walk 1a->1b->2a via the writer, forge a minimal 2b settle file, and set
+    state to round_3a_pending so a 3a write can be exercised directly. Mirrors
+    the setup in test_3b_final_status_ready_when_no_blockers."""
+    write_round(workspace, "round_1a_input.json")
+    write_round(workspace, "round_1b_input.json")
+    write_round(workspace, "round_2a_input.json")
+    artifact_dir = workspace / ".cross-agent-reviews/foo/spec"
+    state_path = workspace / ".cross-agent-reviews/foo/state.json"
+    settle_2b = json.loads((artifact_dir / "round-1b.json").read_text())
+    settle_2b.update(
+        {
+            "round": 2,
+            "stage": "2b",
+            "adjudication_summary": {"accepted": 0, "rejected": 0},
+            "adjudications": [],
+            "accepted_findings": [],
+            "rejected_findings": [],
+            "changelog": [],
+            "self_review": [],
+        }
+    )
+    (artifact_dir / "round-2b.json").write_text(
+        json.dumps(settle_2b, indent=2, sort_keys=True) + "\n"
+    )
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "round_3a_pending"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def test_3a_clean_terminates_pipeline(workspace_with_state):
+    """A clean 3a (every agent ship_ready) routes straight to
+    ready_for_implementation with the five-round clean_3a shape; no 3b runs."""
+    _walk_to_3a_pending(workspace_with_state)
+    result = write_round(workspace_with_state, "round_3a_input.json")
+    assert result.returncode == 0, result.stderr
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
+    assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3b.json").exists()
+    # Envelope shape is unchanged: no final_status, no extra keys.
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3a.json").read_text()
+    )
+    assert "final_status" not in env
+    assert set(env.keys()) == {
+        "round",
+        "stage",
+        "schema_version",
+        "slug",
+        "artifact_type",
+        "artifact_path",
+        "emitted_at",
+        "slice_plan",
+        "agents",
+    }
+
+
+def test_3a_non_clean_advances_to_round_3b(workspace_with_state):
+    """Regression guard: a 3a with >=1 blocker_found agent still advances to
+    round_3b_pending — the non-clean path is unchanged."""
+    _walk_to_3a_pending(workspace_with_state)
+    result = write_round(workspace_with_state, "round_3a_input_blocker.json")
+    assert result.returncode == 0, result.stderr
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3b_pending"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
+
+
 def test_rejects_state_with_both_blocks_missing_spec_anchor(workspace_with_state, tmp_path):
     """If state.json has both spec and plan blocks, plan.spec_hash_at_start
     MUST be present. Otherwise spec-drift detection silently no-ops. This
