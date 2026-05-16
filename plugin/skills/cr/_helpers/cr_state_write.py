@@ -639,6 +639,11 @@ def main() -> int:
 
     # Cross-round invariants
     if stage == "2a":
+        if prior_settle is None:
+            return _err(
+                "round 2a requires round-1b.json (the prior round-1b settle "
+                "file, source of the accepted findings 2a verifies) on disk"
+            )
         msg = _cross_round_check_2a(envelope, prior_settle)
         if msg:
             return _err(msg)

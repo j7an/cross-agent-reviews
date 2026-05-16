@@ -931,3 +931,28 @@ def test_rejects_state_with_both_blocks_missing_spec_anchor(workspace_with_state
     )
     assert result.returncode == 1
     assert "spec_hash_at_start" in result.stderr
+
+
+def test_2a_missing_round_1b_exits_clean(workspace_with_state):
+    """Writing round 2a when round-1b.json is absent must exit nonzero with a
+    clean diagnostic, not crash with a TypeError traceback. Regression for
+    issue #17."""
+    # Setup: drive the pipeline to round_2a_pending. Assert each setup write
+    # succeeds so a setup regression cannot masquerade as the missing-file case.
+    r1a = write_round(workspace_with_state, "round_1a_input.json")
+    assert r1a.returncode == 0, r1a.stderr
+    r1b = write_round(workspace_with_state, "round_1b_input.json")
+    assert r1b.returncode == 0, r1b.stderr
+
+    # Remove the on-disk dependency the 2a cross-round check needs. State still
+    # legitimately expects 2a next.
+    round_1b = workspace_with_state / ".cross-agent-reviews/foo/spec/round-1b.json"
+    assert round_1b.exists()
+    round_1b.unlink()
+
+    result = write_round(workspace_with_state, "round_2a_input.json")
+
+    assert result.returncode == 1
+    assert "round 2a requires round-1b.json" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-2a.json").exists()
