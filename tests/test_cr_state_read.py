@@ -492,6 +492,43 @@ def test_paste_settle_rejected_finding_rejection_reason_mutation_rejected(
     assert "rejected_findings" in result.stderr
 
 
+def test_paste_settle_rejected_finding_copied_content_mutation_rejected(
+    workspace_with_1a, fixtures_dir
+):
+    """The `rejected_findings` parity check must compare the *copied audit
+    content* of each entry, not just its id and `rejection_reason`. Here the
+    `rejection_reason` matches the adjudication's `reasoning` exactly, but a
+    copied audit field (`severity`) is mutated away from the paired 1a on
+    disk. A check that compared only ids + `rejection_reason` would miss this;
+    the full parsed-object equality must reject it."""
+    prior_1a = json.loads(
+        (workspace_with_1a / ".cross-agent-reviews/foo/spec/round-1a.json").read_text()
+    )
+    finding = next(f for agent in prior_1a["agents"] for f in agent["findings"])
+    base_1b = json.loads((fixtures_dir / "schema_positive/round_1b_settle.json").read_text())
+    base_1b["slug"] = "foo"
+    base_1b["artifact_type"] = "spec"
+    base_1b["artifact_path"] = "docs/specs/foo-design.md"
+    base_1b["adjudications"] = [
+        {"finding_id": finding["id"], "verdict": "reject", "reasoning": "Not a real problem."}
+    ]
+    base_1b["adjudication_summary"] = {"accepted": 0, "rejected": 1}
+    base_1b["accepted_findings"] = []
+    # rejection_reason matches the adjudication's reasoning; the divergence is
+    # in a copied audit field (`severity`), which the writer would inherit
+    # verbatim from the paired 1a.
+    base_1b["rejected_findings"] = [
+        {**finding, "severity": "nit", "rejection_reason": "Not a real problem."}
+    ]
+    base_1b["changelog"] = []
+    base_1b["self_review"] = []
+    result = run(
+        SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_1b)
+    )
+    assert result.returncode == 1
+    assert "rejected_findings" in result.stderr
+
+
 def _walk_workspace_to_2b_pending(workspace, fid="R1-1-001", status="not_resolved"):
     """Advance workspace state through 1a → 1b → 2a so a 2b paste can be
     exercised. Forges a paired 2a round file with the named verification's
