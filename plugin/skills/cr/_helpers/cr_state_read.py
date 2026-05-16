@@ -350,7 +350,6 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
         )
 
     accepted_set = {a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "accept"}
-    rejected_set = {a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "reject"}
     changelog_ids = {c["finding_id"] for c in envelope["changelog"]}
     self_review_ids = {s["finding_id"] for s in envelope["self_review"]}
     missing_changelog = sorted(accepted_set - changelog_ids)
@@ -368,37 +367,51 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
     # an envelope that diverges from what a local write would have produced
     # and breaking downstream verification (which reads `accepted_findings`
     # to know what to verify). Replay the same derivations here.
-    accepted_envelope_ids = {f["id"] for f in envelope["accepted_findings"]}
-    if accepted_envelope_ids != accepted_set:
+    #
+    # Equality is full parsed-object comparison, not just id membership: the
+    # writer derives each finding object from the paired audit, so a paste
+    # that keeps a correct id but mutates an embedded field (`severity`,
+    # `finding`, `location`, a rejection reason) or reorders the arrays must
+    # be rejected. Python `dict`/`list` `==` compares structure and element
+    # order, which is exactly the intended contract. `unknown_adj` above
+    # guarantees every adjudication id is in `audit_findings_by_id`, and the
+    # duplicate-adjudication check guarantees `adj_by_id` is well-defined.
+    adj_by_id = {a["finding_id"]: a for a in envelope["adjudications"]}
+    accept_ids_ordered = [
+        a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "accept"
+    ]
+    reject_ids_ordered = [
+        a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "reject"
+    ]
+    expected_accepted = [audit_findings_by_id[fid] for fid in accept_ids_ordered]
+    expected_rejected = [
+        {**audit_findings_by_id[fid], "rejection_reason": adj_by_id[fid]["reasoning"]}
+        for fid in reject_ids_ordered
+    ]
+    if envelope["accepted_findings"] != expected_accepted:
         return (
-            f"accepted_findings id set {sorted(accepted_envelope_ids)} "
-            f"diverges from adjudications (accept verdicts) "
-            f"{sorted(accepted_set)}"
+            "accepted_findings diverges from the paired-audit derivation "
+            "(content or order mismatch with adjudications + paired audit)"
         )
-    rejected_envelope_ids = {f["id"] for f in envelope["rejected_findings"]}
-    if rejected_envelope_ids != rejected_set:
+    if envelope["rejected_findings"] != expected_rejected:
         return (
-            f"rejected_findings id set {sorted(rejected_envelope_ids)} "
-            f"diverges from adjudications (reject verdicts) "
-            f"{sorted(rejected_set)}"
+            "rejected_findings diverges from the paired-audit derivation "
+            "(content, rejection_reason, or order mismatch with "
+            "adjudications + paired audit)"
         )
     summary = envelope["adjudication_summary"]
-    if summary.get("accepted") != len(accepted_envelope_ids):
+    if summary.get("accepted") != len(expected_accepted):
         return (
             f"adjudication_summary.accepted={summary.get('accepted')} "
-            f"diverges from accepted_findings count "
-            f"{len(accepted_envelope_ids)}"
+            f"diverges from accepted_findings count {len(expected_accepted)}"
         )
-    if summary.get("rejected") != len(rejected_envelope_ids):
+    if summary.get("rejected") != len(expected_rejected):
         return (
             f"adjudication_summary.rejected={summary.get('rejected')} "
-            f"diverges from rejected_findings count "
-            f"{len(rejected_envelope_ids)}"
+            f"diverges from rejected_findings count {len(expected_rejected)}"
         )
     if envelope["stage"] == "3b":
-        expected_final = (
-            "CORRECTED_AND_READY" if accepted_envelope_ids else "READY_FOR_IMPLEMENTATION"
-        )
+        expected_final = "CORRECTED_AND_READY" if expected_accepted else "READY_FOR_IMPLEMENTATION"
         if envelope.get("final_status") != expected_final:
             return (
                 f"final_status={envelope.get('final_status')!r} diverges "
