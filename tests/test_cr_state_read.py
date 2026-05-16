@@ -689,22 +689,22 @@ def test_paste_2b_rejects_revisit_of_resolved_verification(workspace_with_1a):
 
 def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtures_dir):
     """A 3b paste whose `final_status` does not match the shape of
-    `accepted_findings` must be rejected. `_build_settle_envelope` derives
-    `final_status` (CORRECTED_AND_READY when accepted_findings is non-empty,
-    else READY_FOR_IMPLEMENTATION); a hand-built paste could lie about
-    terminal status while still parsing under the schema."""
+    `accepted_findings` must be rejected. The schema biconditional enforces
+    empty accepted_findings → READY_FOR_IMPLEMENTATION and non-empty →
+    CORRECTED_PENDING_VERIFICATION; a hand-built paste could lie about
+    terminal status and must be caught."""
     base_3b = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
     base_3b["slug"] = "foo"
     base_3b["artifact_type"] = "spec"
     base_3b["artifact_path"] = "docs/specs/foo-design.md"
-    # Empty accepted_findings should imply READY_FOR_IMPLEMENTATION; lying.
+    # Empty accepted_findings should imply READY_FOR_IMPLEMENTATION; lying with CPV.
     base_3b["accepted_findings"] = []
     base_3b["adjudications"] = []
     base_3b["adjudication_summary"] = {"accepted": 0, "rejected": 0}
     base_3b["rejected_findings"] = []
     base_3b["changelog"] = []
     base_3b["self_review"] = []
-    base_3b["final_status"] = "CORRECTED_AND_READY"
+    base_3b["final_status"] = "CORRECTED_PENDING_VERIFICATION"
     # Walk workspace to round_3b_pending so the paste-stage check accepts a 3b.
     state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
     state = json.loads(state_path.read_text())
@@ -728,7 +728,9 @@ def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtu
         SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_3b)
     )
     assert result.returncode == 1
-    assert "final_status" in result.stderr
+    # The schema biconditional rejects empty accepted_findings + CORRECTED_PENDING_VERIFICATION
+    # with a "schema violation" error; the exact message text varies by jsonschema version.
+    assert "schema violation" in result.stderr.lower() or "final_status" in result.stderr
 
 
 def test_paste_settle_refreshes_content_hash(workspace_with_1a, fixtures_dir):

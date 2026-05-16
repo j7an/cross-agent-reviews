@@ -748,6 +748,34 @@ def test_3a_non_clean_advances_to_round_3b(workspace_with_state):
     assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
 
 
+def test_3b_accept_emits_corrected_pending_verification(workspace_with_state):
+    # drive 1a..3a with a 3a blocker, then 3b accepting it
+    _walk_to_3a_pending(workspace_with_state)
+    write_round(workspace_with_state, "round_3a_input_blocker.json")
+    result = write_round(workspace_with_state, "round_3b_input_accept.json")
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3b.json").read_text()
+    )
+    assert env["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3c_pending"
+    assert "3c" not in state["spec"]["completed_rounds"]
+
+
+def test_3b_zero_accepted_terminates_ready(workspace_with_state):
+    _walk_to_3a_pending(workspace_with_state)
+    write_round(workspace_with_state, "round_3a_input_blocker.json")
+    result = write_round(workspace_with_state, "round_3b_input_adjudicate.json")  # rejects all
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3b.json").read_text()
+    )
+    assert env["final_status"] == "READY_FOR_IMPLEMENTATION"
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+
+
 def test_rejects_state_with_both_blocks_missing_spec_anchor(workspace_with_state, tmp_path):
     """If state.json has both spec and plan blocks, plan.spec_hash_at_start
     MUST be present. Otherwise spec-drift detection silently no-ops. This

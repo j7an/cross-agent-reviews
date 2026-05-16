@@ -475,7 +475,11 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
             f"diverges from rejected_findings count {len(expected_rejected)}"
         )
     if envelope["stage"] == "3b":
-        expected_final = "CORRECTED_AND_READY" if expected_accepted else "READY_FOR_IMPLEMENTATION"
+        expected_final = (
+            "READY_FOR_IMPLEMENTATION"
+            if not expected_accepted
+            else "CORRECTED_PENDING_VERIFICATION"
+        )
         if envelope.get("final_status") != expected_final:
             return (
                 f"final_status={envelope.get('final_status')!r} diverges "

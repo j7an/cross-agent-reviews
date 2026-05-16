@@ -241,3 +241,44 @@ def test_round_3b_settle_nonblocker_accepted_fails(schema_dir, registry, fixture
         (fixtures_dir / "schema_negative/round_3b_settle_nonblocker_accepted.json").read_text()
     )
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_zero_accepted_requires_ready(schema_dir, registry, fixtures_dir):
+    """3b with empty accepted_findings MUST carry final_status READY_FOR_IMPLEMENTATION."""
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    assert instance["accepted_findings"] == []
+    assert instance["final_status"] == "READY_FOR_IMPLEMENTATION"
+    _validate(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_zero_accepted_with_cpv_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    instance["final_status"] = "CORRECTED_PENDING_VERIFICATION"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_accepted_with_cpv_passes(schema_dir, registry, fixtures_dir):
+    """A 3b with accepted findings is valid ONLY with CORRECTED_PENDING_VERIFICATION."""
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/round_3b_settle_corrected.json").read_text()
+    )
+    assert instance["accepted_findings"]  # non-empty
+    assert instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    _validate(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_accepted_with_ready_fails(schema_dir, registry, fixtures_dir):
+    """Requirement-9 gate: accepted findings + READY_FOR_IMPLEMENTATION is REJECTED
+    — a paste cannot present corrected 3b work as ready without verification."""
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/round_3b_settle_corrected.json").read_text()
+    )
+    instance["final_status"] = "READY_FOR_IMPLEMENTATION"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_corrected_and_ready_value_removed(schema_dir, registry, fixtures_dir):
+    """CORRECTED_AND_READY is no longer a legal settle-round final_status."""
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    instance["final_status"] = "CORRECTED_AND_READY"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)

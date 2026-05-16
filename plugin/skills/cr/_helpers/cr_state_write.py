@@ -288,7 +288,9 @@ def _build_settle_envelope(
     }
     if stage == "3b":
         envelope["final_status"] = (
-            "READY_FOR_IMPLEMENTATION" if not accepted_findings else "CORRECTED_AND_READY"
+            "READY_FOR_IMPLEMENTATION"
+            if not accepted_findings
+            else "CORRECTED_PENDING_VERIFICATION"
         )
     return envelope
 
@@ -476,6 +478,8 @@ def main() -> int:
     block["completed_rounds"] = sorted({*block["completed_rounds"], stage})
     if stage == "3a" and _is_clean_3a(envelope):
         block["current_stage"] = "ready_for_implementation"
+    elif stage == "3b" and envelope["final_status"] == "CORRECTED_PENDING_VERIFICATION":
+        block["current_stage"] = "round_3c_pending"
     else:
         block["current_stage"] = NEXT_STAGE[stage]
     block["last_updated_at"] = envelope["emitted_at"]

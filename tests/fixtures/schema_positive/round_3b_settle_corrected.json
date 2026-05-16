@@ -15,24 +15,20 @@
   ],
   "adjudication_summary": {"accepted": 1, "rejected": 0},
   "adjudications": [
-    {"finding_id": "R3-1-001", "verdict": "accept", "reasoning": "Worth addressing before implementation."}
+    {"finding_id": "R3-6-001", "verdict": "accept", "reasoning": "This is a true blocker the implementer cannot proceed without."}
   ],
   "accepted_findings": [
     {
-      "id": "R3-1-001",
-      "location": "§3.2 line 47",
-      "severity": "gap",
-      "finding": "Field foo lacks a stated default.",
-      "why_it_matters": "Implementer must guess the default value.",
-      "suggested_direction": "Specify the default for foo in §3.2."
+      "id": "R3-6-001",
+      "location": "§4",
+      "severity": "blocker",
+      "finding": "the final blocker the 3b author accepted",
+      "why_it_matters": "an implementer cannot proceed without it",
+      "suggested_direction": "define the missing error path"
     }
   ],
   "rejected_findings": [],
-  "changelog": [
-    {"finding_id": "R3-1-001", "change_made": "Specified the default for foo in §3.2."}
-  ],
-  "self_review": [
-    {"finding_id": "R3-1-001", "resolved": true, "over_specified": false, "introduces_contradiction": false, "notes": ""}
-  ],
+  "changelog": [],
+  "self_review": [],
   "final_status": "CORRECTED_PENDING_VERIFICATION"
 }

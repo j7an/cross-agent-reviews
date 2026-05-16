@@ -1,0 +1,14 @@
+{
+  "stage": "3b",
+  "adjudications": [
+    {"finding_id": "R3-1-001", "verdict": "accept",
+     "reasoning": "This is a true blocker; the implementer cannot proceed without it."}
+  ],
+  "rejected_findings": [],
+  "changelog": [
+    {"finding_id": "R3-1-001", "change_made": "Defined the missing error path in §4.1."}
+  ],
+  "self_review": [
+    {"finding_id": "R3-1-001", "resolved": true, "over_specified": false, "introduces_contradiction": false, "notes": ""}
+  ]
+}
