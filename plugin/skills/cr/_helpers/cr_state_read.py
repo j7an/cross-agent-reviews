@@ -11,6 +11,8 @@ from pathlib import Path
 
 import jsonschema
 from _cr_lib import (
+    CLEAN_3A_TERMINAL,
+    VIA_3B_TERMINAL,
     atomic_write,
     build_registry,
     canonical_json,
@@ -19,6 +21,7 @@ from _cr_lib import (
     load_schema,
     now_iso8601_utc,
     state_dir,
+    terminal_shape,
     validate_slug,
 )
 
@@ -486,12 +489,13 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                         f"completed_rounds={completed!r} (must be [])"
                     )
             elif stage == "ready_for_implementation":
-                if sorted(completed) != list(ROUND_STAGES):
+                if terminal_shape(completed) == "invalid":
                     return _err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='ready_for_implementation' but "
-                        f"completed_rounds={completed!r} "
-                        f"(must contain all six: {list(ROUND_STAGES)})"
+                        f"completed_rounds={completed!r} (must be the clean-3a "
+                        f"terminal {sorted(CLEAN_3A_TERMINAL)} or the via-3b "
+                        f"terminal {sorted(VIA_3B_TERMINAL)})"
                     )
             else:
                 return _err(

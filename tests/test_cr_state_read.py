@@ -843,6 +843,26 @@ def test_resolve_drift_restart_archives_plan_block(workspace_with_1a):
     assert (archives[0] / "plan" / "round-1a.json").exists()
 
 
+def test_bootstrap_paste_accepts_clean_3a_terminal(workspace):
+    """A bootstrap with current_stage='ready_for_implementation' and the
+    five-round clean_3a completed set is a valid terminal cross-host handoff
+    (the pipeline terminated at a clean 3a; no 3b ran). Must succeed."""
+    payload = _bootstrap_payload("ready_for_implementation", ["1a", "1b", "2a", "2b", "3a"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_paste_rejects_invalid_terminal_shape(workspace):
+    """current_stage='ready_for_implementation' with completed_rounds that is
+    neither the clean_3a nor the via_3b set is rejected as a state-integrity
+    error — never silently accepted."""
+    payload = _bootstrap_payload("ready_for_implementation", ["1a", "2a", "3a"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 1
+    assert "ready_for_implementation" in result.stderr
+    assert "terminal" in result.stderr.lower()
+
+
 def test_check_spec_drift_detected(workspace_with_1a):
     state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
     state = json.loads(state_path.read_text())
