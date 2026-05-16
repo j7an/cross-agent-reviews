@@ -160,7 +160,7 @@ fi
 # --- v0.1.x checks (router + rounds + schemas + shared content) ---
 
 check_file_exists plugin/skills/cr/SKILL.md "Router SKILL.md"
-for stage in 1a-audit 1b-settle 2a-audit 2b-settle 3a-audit 3b-settle; do
+for stage in 1a-audit 1b-settle 2a-audit 2b-settle 3a-audit 3b-settle 3c-verify; do
   check_file_exists "plugin/skills/cr/rounds/${stage}.md" "Round file: $stage"
 done
 
@@ -267,8 +267,8 @@ done
 # preflight copy must not imply every round requires a fresh session, and the
 # round files must carry the same audit-vs-settle contract at their entrypoint.
 check_contains plugin/skills/cr/SKILL.md \
-  'If next stage is an audit round (`1a`, `2a`, `3a`), execute the **fresh-session preflight**' \
-  "F6a: SKILL.md routes audit rounds through fresh-session preflight"
+  'If next stage is an audit round (`1a`, `2a`, `3a`) **or the verification round (`3c`)**, execute the **fresh-session preflight**' \
+  "F6a: SKILL.md routes audit and verification rounds through fresh-session preflight"
 check_contains plugin/skills/cr/SKILL.md \
   'If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight' \
   "F6a: SKILL.md skips fresh-session preflight for settle rounds"
@@ -288,6 +288,9 @@ for stage in 1a 2a 3a; do
     'Fresh-session preflight' \
     "F6d: ${stage} audit file mentions fresh-session preflight"
 done
+check_contains "plugin/skills/cr/rounds/3c-verify.md" \
+  'Fresh-session preflight' \
+  "F6d: 3c-verify file mentions fresh-session preflight"
 
 # --- Summary ---
 
