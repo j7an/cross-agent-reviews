@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Cross-Agent Reviews",
     "shortDescription": "State-driven /cr cross-agent spec/plan review pipeline",
-    "longDescription": "Single /cr command advances the active 3-round / 6-step review pipeline. Reads .cross-agent-reviews/<slug>/state.json, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b), validates output via JSON Schema, and persists state. Audit rounds (1a/2a/3a) require fresh sessions; settle rounds (1b/2b/3b) do not. Supports cross-host paste-import. Terminates with status READY_FOR_IMPLEMENTATION or CORRECTED_AND_READY.",
+    "longDescription": "Single /cr command advances the active 3-round / 6-step review pipeline. Reads .cross-agent-reviews/<slug>/state.json, dispatches the next round (1a → 1b → 2a → 2b → 3a, then 3b only when round 3a finds blockers — a clean 3a terminates early), validates output via JSON Schema, and persists state. Audit rounds (1a/2a/3a) require fresh sessions; settle rounds (1b/2b/3b) do not. Supports cross-host paste-import. Terminates with status READY_FOR_IMPLEMENTATION or CORRECTED_AND_READY.",
     "developerName": "j7an",
     "category": "Coding",
     "capabilities": [

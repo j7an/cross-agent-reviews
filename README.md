@@ -13,11 +13,15 @@ A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross
 | 3a | `rounds/3a-audit.md` | Reviewer (strict final check) | `round-2b.json` | `round-3a.json` |
 | 3b | `rounds/3b-settle.md` | Author (final adjudication) | `round-3a.json` | `final_status` |
 
+Round 3b runs only when Round 3a found blockers. A **clean 3a** — every reviewer agent `ship_ready` with zero findings — terminates the pipeline directly (see **Terminal status** below).
+
 **Fresh session per audit round.** The router applies a fresh-session preflight only before audit rounds (1a, 2a, 3a) — cross-agent diversity demands the reviewer come to the artifact without prior interpretive frame. Settle rounds (1b, 2b, 3b) may continue in the same session or a fresh one (operator choice).
 
-**Terminal status.** Round 3b emits one of two statuses:
-- `READY_FOR_IMPLEMENTATION` — Round 3a found no blockers; artifact ships unchanged.
-- `CORRECTED_AND_READY` — Round 3a found blockers; minimum corrections applied; artifact ships.
+**Terminal status.** The pipeline reaches `READY_FOR_IMPLEMENTATION` one of two ways:
+- **Clean 3a** — every Round 3a agent is `ship_ready` with zero findings. The pipeline terminates immediately at Round 3a; Round 3b does not run.
+- **Via Round 3b** — Round 3a found blockers, so Round 3b runs final adjudication and emits one of:
+  - `READY_FOR_IMPLEMENTATION` — 3b accepted no findings; artifact ships unchanged.
+  - `CORRECTED_AND_READY` — 3b accepted findings; minimum corrections applied; artifact ships.
 
 ## Architecture
 
@@ -158,7 +162,9 @@ State file does all handoff. Per the §5.4 fresh-session policy, fresh sessions 
 [fresh session]      /cr             → state says next is 2a (audit); fresh required
 [same or fresh]      /cr             → state says next is 2b; runs round 2b
 [fresh session]      /cr             → state says next is 3a (audit); fresh required
-[same or fresh]      /cr             → state says next is 3b; runs round 3b
+                                       clean 3a → pipeline terminates here (round 3b skipped)
+                                       non-clean 3a → state says next is 3b
+[same or fresh]      /cr             → (non-clean 3a only) runs round 3b
 [fresh session]      /cr <plan-path> → state has spec finished; plan starts at round 1a (audit, fresh required)
 … [plan rounds with the same audit/settle alternation] …
 ```

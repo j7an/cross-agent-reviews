@@ -11,6 +11,8 @@ from pathlib import Path
 
 import jsonschema
 from _cr_lib import (
+    CLEAN_3A_TERMINAL,
+    VIA_3B_TERMINAL,
     atomic_write,
     build_registry,
     canonical_json,
@@ -19,6 +21,7 @@ from _cr_lib import (
     load_schema,
     now_iso8601_utc,
     state_dir,
+    terminal_shape,
     validate_slug,
 )
 
@@ -32,6 +35,7 @@ from cr_state_write import (
     SETTLE_STAGES,
     _check_slice_plan_frozen,
     _cross_round_check_2a,
+    _is_clean_3a,
 )
 from jsonschema import Draft202012Validator
 
@@ -80,8 +84,28 @@ def _read_round_files(artifact_dir: Path) -> dict[str, dict]:
 def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
     block = state.get(artifact_type)
     if block is None:
-        return {"integrity": "OK", "pending_import": False, "pending_stage": None}
+        return {
+            "integrity": "OK",
+            "integrity_reason": None,
+            "pending_import": False,
+            "pending_stage": None,
+        }
     completed = block.get("completed_rounds", [])
+    # Invalid terminal shape: ready_for_implementation with a completed_rounds
+    # set that is neither terminal shape. An integrity error invalidates every
+    # subsequent routing decision, so this is checked before pending-import
+    # detection (consistent with SKILL.md §2's "check this before any other
+    # branch").
+    if (
+        block.get("current_stage") == "ready_for_implementation"
+        and terminal_shape(completed) == "invalid"
+    ):
+        return {
+            "integrity": "STATE_INTEGRITY_ERROR",
+            "integrity_reason": "invalid_terminal_shape",
+            "pending_import": False,
+            "pending_stage": None,
+        }
     rounds_on_disk = _read_round_files(artifact_dir)
     issues: list[str] = []
     pending_stage: str | None = None
@@ -94,9 +118,14 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
             )
             rp.rename(target)
             issues.append("ORPHAN_DISCARDED")
-    # pending import: completed has a stage whose file is missing
-    for stage in completed:
-        if stage not in rounds_on_disk:
+    # pending import: completed has a stage whose file is missing. Scan in
+    # canonical `ROUND_STAGES` order, not `completed_rounds` array order:
+    # `terminal_shape` accepts a terminal set order-insensitively, so a
+    # validly-pasted bootstrap may carry `completed_rounds` in any order.
+    # The earliest-missing stage must be chosen by pipeline order so import
+    # recovery requests the prior round before the round that depends on it.
+    for stage in ROUND_STAGES:
+        if stage in completed and stage not in rounds_on_disk:
             pending_stage = stage
             break
     # integrity (only if some completed rounds have local files)
@@ -106,11 +135,13 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
         if block["last_updated_at"] < local_max:
             return {
                 "integrity": "STATE_INTEGRITY_ERROR",
+                "integrity_reason": "stale_state",
                 "pending_import": pending_stage is not None,
                 "pending_stage": pending_stage,
             }
     return {
         "integrity": "ORPHAN_DISCARDED" if "ORPHAN_DISCARDED" in issues else "OK",
+        "integrity_reason": None,
         "pending_import": pending_stage is not None,
         "pending_stage": pending_stage,
     }
@@ -123,10 +154,15 @@ def _cmd_read(repo_root: Path, slug: str, artifact_type: str) -> int:
     state = json.loads(state_path.read_text())
     artifact_dir = state_dir(repo_root) / slug / artifact_type
     classification = _classify(state, artifact_type, artifact_dir)
-    if classification["integrity"] == "STATE_INTEGRITY_ERROR":
-        sys.stdout.write(canonical_json({"state": state, **classification}))
-        return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
     sys.stdout.write(canonical_json({"state": state, **classification}))
+    if classification["integrity"] == "STATE_INTEGRITY_ERROR":
+        if classification["integrity_reason"] == "invalid_terminal_shape":
+            return _err(
+                "STATE_INTEGRITY_ERROR: current_stage is ready_for_implementation "
+                "but completed_rounds is neither terminal shape",
+                code=3,
+            )
+        return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
     return 0
 
 
@@ -190,19 +226,47 @@ def _cmd_resolve_drift(repo_root: Path, slug: str, mode: str) -> int:
     return _err(f"unknown drift-resolution mode: {mode!r}; use 'accept' or 'restart'")
 
 
+def _check_agents_match_slice_plan(envelope: dict) -> str | None:
+    """Replay the writer's agent-reports-vs-`slice_plan` alignment check.
+
+    `cr_state_write.py::_build_audit_envelope` rejects an audit envelope
+    whose `agents` agent_ids do not exactly match the `slice_plan` agent_ids.
+    The schema cannot express this cross-array invariant (`agents` only has
+    `minItems: 1`), so a pasted audit envelope with a missing or duplicated
+    agent slips through schema validation. For 3a this is acute: a partial
+    3a retaining only `ship_ready` agents satisfies `_is_clean_3a` and would
+    wrongly terminate the pipeline at `ready_for_implementation`, skipping
+    3b — clean 3a means *every* expected slice reported ship_ready, not a
+    surviving subset. Returns an error message on mismatch, else None."""
+    expected = sorted(s["agent_id"] for s in envelope["slice_plan"])
+    actual = sorted(a["agent_id"] for a in envelope["agents"])
+    if actual != expected:
+        return (
+            "agent reports do not align with slice_plan: expected agent_ids "
+            f"{expected}, got {actual}"
+        )
+    return None
+
+
 def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | None:
     """Apply the cross-round checks that `cr_state_write.py` runs locally.
 
-    For 2a: verifications must reference accepted 1b findings with the
-    correct frozen-slice ownership. For 2a/3a: the `slice_plan` must match
-    the prior audit round's slice plan. For 1b/2b/3b: the same per-envelope
-    settle invariants `_build_settle_envelope` enforces locally — every
-    paired-audit finding has exactly one adjudication, every accepted finding
-    has matching changelog and self_review entries, and every adjudication /
-    changelog / self_review finding_id resolves into the paired audit (or, for
-    2b only, the paired 2a's `round_1_verifications`). Returns an error
-    message string on failure, or None when the envelope passes."""
+    For 1a/2a/3a: the `agents` agent_ids must match the `slice_plan`
+    agent_ids exactly. For 2a: verifications must reference accepted 1b
+    findings with the correct frozen-slice ownership. For 2a/3a: the
+    `slice_plan` must match the prior audit round's slice plan. For
+    1b/2b/3b: the same per-envelope settle invariants
+    `_build_settle_envelope` enforces locally — every paired-audit finding
+    has exactly one adjudication, every accepted finding has matching
+    changelog and self_review entries, and every adjudication / changelog /
+    self_review finding_id resolves into the paired audit (or, for 2b only,
+    the paired 2a's `round_1_verifications`). Returns an error message
+    string on failure, or None when the envelope passes."""
     stage = envelope["stage"]
+    if stage in {"1a", "2a", "3a"}:
+        err = _check_agents_match_slice_plan(envelope)
+        if err is not None:
+            return err
     if stage == "2a":
         prior_1b = _read_optional(artifact_dir / "round-1b.json")
         if prior_1b is None:
@@ -485,12 +549,13 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                         f"completed_rounds={completed!r} (must be [])"
                     )
             elif stage == "ready_for_implementation":
-                if sorted(completed) != list(ROUND_STAGES):
+                if terminal_shape(completed) == "invalid":
                     return _err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='ready_for_implementation' but "
-                        f"completed_rounds={completed!r} "
-                        f"(must contain all six: {list(ROUND_STAGES)})"
+                        f"completed_rounds={completed!r} (must be the clean-3a "
+                        f"terminal {sorted(CLEAN_3A_TERMINAL)} or the via-3b "
+                        f"terminal {sorted(VIA_3B_TERMINAL)})"
                     )
             else:
                 return _err(
@@ -536,9 +601,14 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     expected_stage = block["current_stage"].replace("round_", "").replace("_pending", "")
     artifact_dir = state_dir(repo_root) / slug / artifact_type
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    # Pending-import override: earliest completed-but-missing stage
+    # Pending-import override: earliest completed-but-missing stage, by
+    # canonical pipeline order (see `_classify` for why stored array order
+    # is not trusted).
     rounds_on_disk = _read_round_files(artifact_dir)
-    pending = next((s for s in block["completed_rounds"] if s not in rounds_on_disk), None)
+    pending = next(
+        (s for s in ROUND_STAGES if s in block["completed_rounds"] and s not in rounds_on_disk),
+        None,
+    )
     if pending is not None:
         expected_stage = pending
     if instance["stage"] != expected_stage:
@@ -551,18 +621,44 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     invariant_err = _paste_cross_round_invariants(instance, artifact_dir)
     if invariant_err is not None:
         return _err(invariant_err)
+    # Clean-3a parity for terminal backfill: when the pending import is the
+    # 3a round of a `ready_for_implementation` block, the pasted 3a's clean
+    # status MUST agree with the block's terminal shape. A clean_3a terminal
+    # asserts 3a found no blockers; a via_3b terminal asserts it did (else 3b
+    # would never have run). The state-update block below is skipped for a
+    # pending backfill (`pending is not None`), so without this check a
+    # non-clean round-3a.json can be written into a clean_3a terminal —
+    # leaving state claiming READY_FOR_IMPLEMENTATION while the round file on
+    # disk shows a blocker, and `_classify` still reporting OK because it
+    # trusts the five-round terminal shape.
+    if instance["stage"] == "3a" and block["current_stage"] == "ready_for_implementation":
+        shape = terminal_shape(block["completed_rounds"])
+        clean = _is_clean_3a(instance)
+        if shape == "clean_3a" and not clean:
+            return _err(
+                "clean-3a parity: state is a clean_3a terminal but the pasted "
+                "round-3a.json contains a blocker (every 3a agent must be ship_ready)"
+            )
+        if shape == "via_3b" and clean:
+            return _err(
+                "clean-3a parity: state is a via_3b terminal but the pasted "
+                "round-3a.json is clean (a clean 3a terminates without running 3b)"
+            )
     body = canonical_json(instance)
     atomic_write(artifact_dir / f"round-{instance['stage']}.json", body)
     if pending is None:
         block["completed_rounds"] = sorted({*block["completed_rounds"], instance["stage"]})
-        next_stage = {
-            "1a": "round_1b_pending",
-            "1b": "round_2a_pending",
-            "2a": "round_2b_pending",
-            "2b": "round_3a_pending",
-            "3a": "round_3b_pending",
-            "3b": "ready_for_implementation",
-        }[instance["stage"]]
+        if instance["stage"] == "3a" and _is_clean_3a(instance):
+            next_stage = "ready_for_implementation"
+        else:
+            next_stage = {
+                "1a": "round_1b_pending",
+                "1b": "round_2a_pending",
+                "2a": "round_2b_pending",
+                "2b": "round_3a_pending",
+                "3a": "round_3b_pending",
+                "3b": "ready_for_implementation",
+            }[instance["stage"]]
         block["current_stage"] = next_stage
         block["last_updated_at"] = instance["emitted_at"]
         # Settle stages (1b/2b/3b) ship post-edit artifact bytes alongside

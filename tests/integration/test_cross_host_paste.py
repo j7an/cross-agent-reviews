@@ -267,3 +267,90 @@ def test_invariant_violating_2a_paste_rejected(tmp_path):
     result = run(READ, ["--paste", "--slug", "foo"], cwd=host, stdin=json.dumps(bad_2a))
     assert result.returncode == 1
     assert "slice_plan" in result.stderr.lower()
+
+
+def _walk_host_to_3a_pending(host):
+    """Init a host and write rounds 1a..2b locally so it sits at
+    round_3a_pending with all prior round files on disk."""
+    init = run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host,
+        stdin="",
+    )
+    assert init.returncode == 0, init.stderr
+    for stage_input in [
+        "round_1a_input.json",
+        "round_1b_input.json",
+        "round_2a_input.json",
+        "round_2b_input.json",
+    ]:
+        r = run(
+            WRITE,
+            [
+                "--slug",
+                "foo",
+                "--artifact-type",
+                "spec",
+                "--artifact-path",
+                "docs/specs/foo-design.md",
+                "--input",
+                str(REPO_ROOT / "tests/fixtures/state_write_inputs" / stage_input),
+            ],
+            cwd=host,
+        )
+        assert r.returncode == 0, f"{stage_input}: {r.stderr}"
+
+
+def test_clean_3a_cross_host_handoff_terminates(tmp_path):
+    """A clean 3a produced on Host A and pasted onto Host B terminates Host B
+    at ready_for_implementation; the absent round-3b.json is never treated as
+    a pending import."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+    # Both hosts walk 1a..2b with identical fixtures, so their round-2a.json
+    # slice plans match — required for the 3a paste's frozen-slice invariant.
+    _walk_host_to_3a_pending(host_a)
+    _walk_host_to_3a_pending(host_b)
+
+    # Host A: write the clean 3a; capture the emitted envelope.
+    write_3a = run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(REPO_ROOT / "tests/fixtures/state_write_inputs/round_3a_input.json"),
+        ],
+        cwd=host_a,
+    )
+    assert write_3a.returncode == 0, write_3a.stderr
+
+    # Host B: paste-import the clean 3a envelope.
+    paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=write_3a.stdout)
+    assert paste.returncode == 0, paste.stderr
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "ready_for_implementation"
+    assert state_b["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
+    assert not (host_b / ".cross-agent-reviews/foo/spec/round-3b.json").exists()
+
+    # state-read on Host B must not flag the missing round-3b.json as pending.
+    read = run(READ, ["--slug", "foo", "--artifact-type", "spec"], cwd=host_b)
+    assert read.returncode == 0, read.stderr
+    out = json.loads(read.stdout)
+    assert out["pending_import"] is False
+    assert out["integrity"] == "OK"

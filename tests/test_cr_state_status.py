@@ -81,3 +81,116 @@ def test_status_integrity_ok(workspace_with_one_round):
     result = run(["--slug", "foo"], cwd=workspace_with_one_round)
     assert "State integrity:" in result.stdout
     assert "OK" in result.stdout
+
+
+def _seed(tmp_path, completed, current_stage, final_status=None):
+    """Write a state.json under slug 'foo' with the given completed_rounds and
+    current_stage, plus a round file per completed stage. If final_status is
+    given, round-3b.json carries it."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": current_stage,
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        round_obj = {"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}
+        if stage == "3b" and final_status is not None:
+            round_obj["final_status"] = final_status
+        (spec_dir / f"round-{stage}.json").write_text(json.dumps(round_obj) + "\n")
+    return tmp_path
+
+
+def test_status_clean_3a_terminal(tmp_path):
+    ws = _seed(tmp_path, ["1a", "1b", "2a", "2b", "3a"], "ready_for_implementation")
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "skipped (clean 3a)" in result.stdout
+    assert "Terminal:" in result.stdout
+    assert "READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)" in result.stdout
+
+
+def test_status_via_3b_terminal(tmp_path):
+    ws = _seed(
+        tmp_path,
+        ["1a", "1b", "2a", "2b", "3a", "3b"],
+        "ready_for_implementation",
+        final_status="CORRECTED_AND_READY",
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "Terminal:  CORRECTED_AND_READY  (via round 3b)" in result.stdout
+    assert "skipped (clean 3a)" not in result.stdout
+
+
+def test_status_round_3b_pending_has_no_terminal_line(tmp_path):
+    ws = _seed(tmp_path, ["1a", "1b", "2a", "2b", "3a"], "round_3b_pending")
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "3b" in result.stdout
+    assert "PENDING" in result.stdout
+    assert "Terminal:" not in result.stdout
+    assert "skipped (clean 3a)" not in result.stdout
+
+
+def test_status_invalid_terminal_shape_shows_integrity_error(tmp_path):
+    ws = _seed(tmp_path, ["1a", "2a", "3a"], "ready_for_implementation")
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "STATE_INTEGRITY_ERROR" in result.stdout
+    assert "Terminal:" not in result.stdout
+
+
+def test_status_clean_3a_terminal_missing_round_file_no_terminal_summary(tmp_path):
+    """When a clean_3a terminal's round-3a.json is absent locally, status must
+    not print the READY_FOR_IMPLEMENTATION summary — the read/router path
+    treats the missing completed-round file as a pending import. Mirrors the
+    via_3b branch's existing round-3b.json guard."""
+    ws = _seed(tmp_path, ["1a", "1b", "2a", "2b", "3a"], "ready_for_implementation")
+    (ws / ".cross-agent-reviews/foo/spec/round-3a.json").unlink()
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "READY_FOR_IMPLEMENTATION" not in result.stdout
+    assert "round-3a.json pending import" in result.stdout
+
+
+def test_status_clean_3a_terminal_missing_earlier_round_file_no_terminal_summary(tmp_path):
+    """The terminal summary must be suppressed when ANY completed round file
+    is missing, not only the last. A clean_3a terminal with round-1a.json
+    absent but round-3a.json present must report the earliest pending
+    import, not READY_FOR_IMPLEMENTATION — matching the read/router path,
+    which flags any completed-but-missing stage as a pending import."""
+    ws = _seed(tmp_path, ["1a", "1b", "2a", "2b", "3a"], "ready_for_implementation")
+    (ws / ".cross-agent-reviews/foo/spec/round-1a.json").unlink()
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "READY_FOR_IMPLEMENTATION" not in result.stdout
+    assert "round-1a.json pending import" in result.stdout
+
+
+def test_status_via_3b_terminal_missing_earlier_round_file_no_terminal_summary(tmp_path):
+    """Same guard for a via_3b terminal: an earlier missing completed file
+    (round-2a.json) suppresses the final_status summary even though
+    round-3b.json is present locally."""
+    ws = _seed(
+        tmp_path,
+        ["1a", "1b", "2a", "2b", "3a", "3b"],
+        "ready_for_implementation",
+        final_status="CORRECTED_AND_READY",
+    )
+    (ws / ".cross-agent-reviews/foo/spec/round-2a.json").unlink()
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "CORRECTED_AND_READY" not in result.stdout
+    assert "round-2a.json pending import" in result.stdout

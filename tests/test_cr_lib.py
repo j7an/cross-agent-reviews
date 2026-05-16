@@ -144,3 +144,27 @@ def test_canonical_json_sorts_keys():
 def test_canonical_json_indent_2():
     out = lib.canonical_json({"a": [1, 2]})
     assert "\n  " in out
+
+
+# --- terminal_shape ---
+
+
+@pytest.mark.parametrize(
+    ("completed", "expected"),
+    [
+        (["1a", "1b", "2a", "2b", "3a", "3b"], "via_3b"),
+        (["1a", "1b", "2a", "2b", "3a"], "clean_3a"),
+        # order-insensitive: classification compares as a set
+        (["3a", "2b", "1a", "3b", "1b", "2a"], "via_3b"),
+        (["3a", "2b", "2a", "1a", "1b"], "clean_3a"),
+        # neither terminal set
+        (["1a", "2a", "3a"], "invalid"),
+        ([], "invalid"),
+        (["1a", "1b", "2a", "2b", "3a", "3b", "9z"], "invalid"),
+        # duplicate item: rejected before set comparison, even though the
+        # *set* equals the clean_3a set
+        (["1a", "1a", "1b", "2a", "2b", "3a"], "invalid"),
+    ],
+)
+def test_terminal_shape(completed, expected):
+    assert lib.terminal_shape(completed) == expected

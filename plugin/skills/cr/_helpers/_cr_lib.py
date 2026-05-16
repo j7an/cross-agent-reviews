@@ -140,3 +140,28 @@ def build_registry() -> Registry:
 
 def canonical_json(obj: object) -> str:
     return json.dumps(obj, indent=2, sort_keys=True) + "\n"
+
+
+CLEAN_3A_TERMINAL = frozenset({"1a", "1b", "2a", "2b", "3a"})
+VIA_3B_TERMINAL = frozenset({"1a", "1b", "2a", "2b", "3a", "3b"})
+
+
+def terminal_shape(completed_rounds) -> str:
+    """Classify a completed_rounds collection: 'via_3b', 'clean_3a', or 'invalid'.
+
+    Compares as a set — element order in completed_rounds is never canonical,
+    so a validly-pasted state with differently-ordered completed_rounds is not
+    rejected. Duplicates are rejected explicitly rather than trusting the
+    schema's uniqueItems: cr_state_read.py and cr_state_status.py load
+    state.json directly and do NOT schema-validate on read, so a duplicate
+    terminal list must be classified 'invalid' here.
+    """
+    items = list(completed_rounds)
+    if len(items) != len(set(items)):
+        return "invalid"
+    s = set(items)
+    if s == VIA_3B_TERMINAL:
+        return "via_3b"
+    if s == CLEAN_3A_TERMINAL:
+        return "clean_3a"
+    return "invalid"

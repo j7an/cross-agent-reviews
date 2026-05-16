@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from _cr_lib import find_repo_root, state_dir, validate_slug
+from _cr_lib import find_repo_root, state_dir, terminal_shape, validate_slug
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
 
@@ -33,8 +33,17 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
     lines = [f"  {art.capitalize():<5} ({block['path']})"]
     completed = set(block["completed_rounds"])
     current = block["current_stage"]
+    shape = terminal_shape(block["completed_rounds"])
+    is_clean_3a_terminal = current == "ready_for_implementation" and shape == "clean_3a"
     for stage in ROUND_STAGES:
-        if stage in completed:
+        if stage == "3b" and is_clean_3a_terminal:
+            # 3b is neither completed nor pending for a clean-3a terminal;
+            # render it explicitly so it is not confused with "not reached".
+            # Gated on the terminal stage too: a round_3b_pending state shares
+            # the clean_3a completed_rounds set ({1a,1b,2a,2b,3a}) but has NOT
+            # terminated, so it must still render "PENDING", not "skipped".
+            lines.append(f"    {stage:<3}  skipped (clean 3a)")
+        elif stage in completed:
             rp = artifact_dir / f"round-{stage}.json"
             if rp.exists():
                 emitted = json.loads(rp.read_text())["emitted_at"]
@@ -47,6 +56,31 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
             lines.append(f"    {stage:<3}  PENDING")
         else:
             lines.append(f"    {stage:<3}  —")
+    if current == "ready_for_implementation":
+        # Suppress the terminal summary whenever ANY completed round file is
+        # missing locally — not just the last one. The read/router path
+        # (`cr_state_read.py::_classify`) treats any completed-but-missing
+        # stage as a pending import, so a "READY_FOR_IMPLEMENTATION" /
+        # final_status summary would contradict it while the per-stage loop
+        # above already flags the gap. Name the earliest-missing stage in
+        # canonical pipeline order, matching the pending-import scan.
+        missing = next(
+            (
+                stage
+                for stage in ROUND_STAGES
+                if stage in completed and not (artifact_dir / f"round-{stage}.json").exists()
+            ),
+            None,
+        )
+        if missing is not None:
+            lines.append(f"  Terminal:  (round-{missing}.json pending import)")
+        elif shape == "clean_3a":
+            lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
+        elif shape == "via_3b":
+            final_status = json.loads((artifact_dir / "round-3b.json").read_text())["final_status"]
+            lines.append(f"  Terminal:  {final_status}  (via round 3b)")
+        # shape == "invalid": no Terminal line — _integrity_for surfaces the
+        # integrity error instead of an inferred final_status.
     return lines
 
 
@@ -55,6 +89,11 @@ def _integrity_for(state: dict, slug_dir: Path) -> str:
         block = state.get(art)
         if block is None:
             continue
+        if (
+            block["current_stage"] == "ready_for_implementation"
+            and terminal_shape(block["completed_rounds"]) == "invalid"
+        ):
+            return "STATE_INTEGRITY_ERROR"
         artifact_dir = slug_dir / art
         max_emitted = ""
         for stage in block["completed_rounds"]:
