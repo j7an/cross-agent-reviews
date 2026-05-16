@@ -176,7 +176,15 @@ def test_round_audit_round_stage_mismatch_fails(schema_dir, registry, fixtures_d
 # --- round-settle.schema.json ---
 
 
-@pytest.mark.parametrize("fixture", ["round_1b_settle.json", "round_3b_settle.json"])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "round_1b_settle.json",
+        "round_3b_settle.json",
+        "round_1b_settle_nit_accepted.json",
+        "round_2b_settle_false_positive_accepted.json",
+    ],
+)
 def test_round_settle_passes(schema_dir, registry, fixtures_dir, fixture):
     instance = json.loads((fixtures_dir / "schema_positive" / fixture).read_text())
     _validate(schema_dir, registry, "round-settle.schema.json", instance)
@@ -189,18 +197,15 @@ def test_round_3b_missing_final_status_fails(schema_dir, registry, fixtures_dir)
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
 
 
-# Severity gate on settle-round `accepted_findings`: 1b and 2b accept only
-# `blocker` or `gap`; 3b accepts `blocker` only. The fixtures below each
-# embed exactly one accepted finding whose severity violates the relevant
-# stage's constraint and otherwise satisfy the schema, so a test failure
-# here pinpoints the missing/incorrect `allOf` clause.
-@pytest.mark.parametrize(
-    "fixture",
-    [
-        "round_1b_settle_nit_accepted.json",
-        "round_2b_settle_false_positive_accepted.json",
-    ],
-)
-def test_round_settle_severity_gate_fails(schema_dir, registry, fixtures_dir, fixture):
-    instance = json.loads((fixtures_dir / "schema_negative" / fixture).read_text())
+# Severity gate on settle-round `accepted_findings`: only Round 3b is gated
+# (the final pass is explicitly blocker-only). Rounds 1b and 2b inherit the
+# full Finding severity enum — each round's *audit* stage already controls
+# which severities can be produced, so the settle round does not re-gate
+# them. The fixture below embeds one accepted non-blocker (`gap`) finding in
+# an otherwise schema-valid 3b envelope, so a failure here pinpoints a
+# missing or incorrect 3b `allOf` clause.
+def test_round_3b_settle_nonblocker_accepted_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_negative/round_3b_settle_nonblocker_accepted.json").read_text()
+    )
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
