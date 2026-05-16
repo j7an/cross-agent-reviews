@@ -74,3 +74,31 @@ def test_isolated_env_does_not_install_cross_agent_reviews(tmp_path: Path) -> No
         "cross-agent-reviews is installed in the isolated venv — virtual-project "
         "invariant broken (likely a [build-system] block was added)"
     )
+
+
+def test_pyright_policy_is_explicit() -> None:
+    """Issue #18: [tool.pyright] must declare an explicit, documented policy.
+
+    `include` is the scoping mechanism; a custom `exclude` is intentionally
+    absent (setting one would replace Pyright's default excludes).
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyright = data.get("tool", {}).get("pyright", {})
+
+    assert pyright.get("typeCheckingMode") == "standard", (
+        "[tool.pyright].typeCheckingMode must be explicitly 'standard'"
+    )
+    assert pyright.get("include") == [
+        "plugin/skills/cr/_helpers",
+        "tests",
+        "sitecustomize.py",
+    ], "[tool.pyright].include must scope analysis to repo-owned Python"
+    assert "exclude" not in pyright, (
+        "[tool.pyright] must NOT set a custom exclude — scoping is done via "
+        "include; a custom exclude would replace Pyright's default excludes"
+    )
+    # Preserved settings (script-mode imports, venv resolution, language floor).
+    assert pyright.get("extraPaths") == ["plugin/skills/cr/_helpers"]
+    assert pyright.get("pythonVersion") == "3.11"
+    assert pyright.get("venvPath") == "."
+    assert pyright.get("venv") == ".venv"
