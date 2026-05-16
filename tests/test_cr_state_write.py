@@ -106,6 +106,22 @@ def test_settle_round_carries_slice_plan_and_accepted_findings(workspace_with_st
     assert len(env["slice_plan"]) == 5  # carried from 1a
 
 
+def test_1b_accepts_nit_severity_finding(workspace_with_state):
+    """Round 1a can emit `nit` findings; Round 1b may adjudicate one as
+    accepted. The settle schema no longer gates 1b accepted-finding severity
+    (only 3b stays blocker-only), so the writer must build and schema-validate
+    a 1b envelope whose `accepted_findings` carries the inherited `nit`
+    severity from the paired 1a audit."""
+    write_round(workspace_with_state, "round_1a_input_nit.json")
+    result = write_round(workspace_with_state, "round_1b_input.json")
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-1b.json").read_text()
+    )
+    assert env["accepted_findings"][0]["id"] == "R1-1-001"
+    assert env["accepted_findings"][0]["severity"] == "nit"
+
+
 def test_settle_round_refreshes_content_hash_after_artifact_edit(workspace_with_state):
     """A settle round (1b/2b/3b) edits the artifact in place per the round
     procedures. After the round writes, `state.<artifact_type>.content_hash`

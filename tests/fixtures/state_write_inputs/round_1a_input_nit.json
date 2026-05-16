@@ -1,0 +1,26 @@
+{
+  "stage": "1a",
+  "slice_plan": [
+    {"agent_id": 1, "concern": "Data model & schemas", "slice_definition": "§3-§5", "is_fixed": false},
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "is_fixed": false},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "is_fixed": false},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "is_fixed": false},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "is_fixed": false}
+  ],
+  "agents": [
+    {
+      "agent_id": 1,
+      "concern": "Data model & schemas",
+      "slice_definition": "§3-§5",
+      "status": "findings_found",
+      "findings": [
+        {"location": "§3.2 line 47", "severity": "nit", "finding": "Field foo's phrasing is slightly unclear.",
+         "why_it_matters": "Minor clarity issue for the implementer.", "suggested_direction": "Reword the foo description in §3.2."}
+      ]
+    },
+    {"agent_id": 2, "concern": "Error handling & edge cases", "slice_definition": "§6", "status": "clean", "findings": []},
+    {"agent_id": 3, "concern": "Acceptance criteria & testability", "slice_definition": "§7-§8", "status": "clean", "findings": []},
+    {"agent_id": 4, "concern": "Cross-section consistency", "slice_definition": "all", "status": "clean", "findings": []},
+    {"agent_id": 5, "concern": "Global coherence", "slice_definition": "all", "status": "clean", "findings": []}
+  ]
+}
