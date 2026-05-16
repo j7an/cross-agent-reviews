@@ -1,0 +1,7 @@
+{
+  "stage": "3c",
+  "verifications": [
+    {"round_3a_finding_id": "R3-1-001", "status": "resolved", "evidence": "the accepted blocker is now addressed in the artifact."}
+  ],
+  "regression_findings": []
+}
