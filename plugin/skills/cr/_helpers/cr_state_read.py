@@ -39,7 +39,7 @@ from cr_state_write import (
 )
 from jsonschema import Draft202012Validator
 
-ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
+ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b", "3c")
 
 
 def _err(msg: str, *, code: int = 1) -> int:
@@ -106,6 +106,24 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
             "pending_import": False,
             "pending_stage": None,
         }
+    # Verification-skipped: a via_3b-shaped terminal whose 3b corrected
+    # findings must have run 3c. If round-3b.json is on disk and reports
+    # CORRECTED_PENDING_VERIFICATION, the block terminated without the
+    # mandated final verification.
+    if (
+        block.get("current_stage") == "ready_for_implementation"
+        and terminal_shape(completed) == "via_3b"
+    ):
+        rb = artifact_dir / "round-3b.json"
+        if rb.exists():
+            r3b = json.loads(rb.read_text())
+            if r3b.get("final_status") == "CORRECTED_PENDING_VERIFICATION":
+                return {
+                    "integrity": "STATE_INTEGRITY_ERROR",
+                    "integrity_reason": "verification_skipped",
+                    "pending_import": False,
+                    "pending_stage": None,
+                }
     rounds_on_disk = _read_round_files(artifact_dir)
     issues: list[str] = []
     pending_stage: str | None = None
@@ -160,6 +178,12 @@ def _cmd_read(repo_root: Path, slug: str, artifact_type: str) -> int:
             return _err(
                 "STATE_INTEGRITY_ERROR: current_stage is ready_for_implementation "
                 "but completed_rounds is neither terminal shape",
+                code=3,
+            )
+        if classification["integrity_reason"] == "verification_skipped":
+            return _err(
+                "STATE_INTEGRITY_ERROR: completed at round 3b with accepted "
+                "findings but final verification (3c) did not run",
                 code=3,
             )
         return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)

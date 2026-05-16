@@ -1045,6 +1045,93 @@ def test_paste_3a_terminal_backfill_accepts_clean(workspace_with_1a, fixtures_di
     assert (spec_dir / "round-3a.json").exists()
 
 
+def test_round_3c_pending_classifies_ok(workspace):
+    """A spec block with current_stage=round_3c_pending, completed_rounds
+    {1a..3b}, and all six round files on disk classifies as integrity OK with
+    no pending import — a missing round-3c.json is not a pending import
+    because 3c is not in completed_rounds."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_3c_pending",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        (spec_dir / f"round-{stage}.json").write_text(
+            json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+        )
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["integrity"] == "OK"
+    assert payload["pending_import"] is False
+
+
+@pytest.fixture
+def cpv_terminal_workspace(workspace):
+    """Workspace with a via_3b terminal (current_stage=ready_for_implementation,
+    completed_rounds 1a..3b) whose round-3b.json carries
+    CORRECTED_PENDING_VERIFICATION — i.e. 3b accepted findings but 3c never ran."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        if stage == "3b":
+            # Use the corrected 3b fixture (CORRECTED_PENDING_VERIFICATION, non-empty accepted_findings)
+            r3b = json.loads(
+                (
+                    Path(__file__).resolve().parent
+                    / "fixtures/schema_positive/round_3b_settle_corrected.json"
+                ).read_text()
+            )
+            r3b["emitted_at"] = "2026-05-07T10:00:00Z"
+            (spec_dir / "round-3b.json").write_text(
+                json.dumps(r3b, indent=2, sort_keys=True) + "\n"
+            )
+        else:
+            (spec_dir / f"round-{stage}.json").write_text(
+                json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+            )
+    return workspace
+
+
+def test_via_3b_terminal_with_cpv_is_integrity_error(cpv_terminal_workspace):
+    """A ready_for_implementation block with the via_3b shape whose
+    round-3b.json carries CORRECTED_PENDING_VERIFICATION terminated without
+    the mandated 3c — an integrity error."""
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=cpv_terminal_workspace)
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["integrity"] == "STATE_INTEGRITY_ERROR"
+    assert payload["integrity_reason"] == "verification_skipped"
+    assert "final verification (3c) did not run" in result.stderr
+
+
 def test_pending_import_uses_canonical_round_order(workspace):
     """A terminal bootstrap may carry completed_rounds in any order
     (`terminal_shape` is order-insensitive). The pending-import scan must
