@@ -32,6 +32,7 @@ from cr_state_write import (
     SETTLE_STAGES,
     _check_slice_plan_frozen,
     _cross_round_check_2a,
+    _is_clean_3a,
 )
 from jsonschema import Draft202012Validator
 
@@ -555,14 +556,17 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     atomic_write(artifact_dir / f"round-{instance['stage']}.json", body)
     if pending is None:
         block["completed_rounds"] = sorted({*block["completed_rounds"], instance["stage"]})
-        next_stage = {
-            "1a": "round_1b_pending",
-            "1b": "round_2a_pending",
-            "2a": "round_2b_pending",
-            "2b": "round_3a_pending",
-            "3a": "round_3b_pending",
-            "3b": "ready_for_implementation",
-        }[instance["stage"]]
+        if instance["stage"] == "3a" and _is_clean_3a(instance):
+            next_stage = "ready_for_implementation"
+        else:
+            next_stage = {
+                "1a": "round_1b_pending",
+                "1b": "round_2a_pending",
+                "2a": "round_2b_pending",
+                "2b": "round_3a_pending",
+                "3a": "round_3b_pending",
+                "3b": "ready_for_implementation",
+            }[instance["stage"]]
         block["current_stage"] = next_stage
         block["last_updated_at"] = instance["emitted_at"]
         # Settle stages (1b/2b/3b) ship post-edit artifact bytes alongside
