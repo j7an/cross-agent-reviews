@@ -316,6 +316,26 @@ def test_bootstrap_paste_rejects_round_1a_pending_with_nonempty_completed(worksp
     assert "round_1a_pending" in result.stderr
 
 
+def test_bootstrap_paste_accepts_round_3c_pending(workspace):
+    """A bootstrap with current_stage='round_3c_pending' and
+    completed_rounds containing all six prior stages is the canonical
+    pre-3c cross-host handoff. Must succeed."""
+    payload = _bootstrap_payload("round_3c_pending", ["1a", "1b", "2a", "2b", "3a", "3b"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_paste_accepts_via_3c_terminal(workspace):
+    """A bootstrap with current_stage='ready_for_implementation' and
+    completed_rounds containing all seven stages (the via-3c terminal)
+    is a valid terminal cross-host handoff. Must succeed."""
+    payload = _bootstrap_payload(
+        "ready_for_implementation", ["1a", "1b", "2a", "2b", "3a", "3b", "3c"]
+    )
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
 def test_paste_round_wrong_stage_rejected(workspace_with_1a, fixtures_dir):
     payload = (fixtures_dir / "schema_positive/round_3a_audit.json").read_text()
     result = run(SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=payload)

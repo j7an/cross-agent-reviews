@@ -348,3 +348,19 @@ def test_final_verification_bad_regression_id_fails(schema_dir, registry, fixtur
         }
     ]
     _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_missing_prior_attempts_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    del instance["prior_attempts"]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_bad_finding_id_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["verifications"][0]["round_3a_finding_id"] = "R3-9-001"
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)

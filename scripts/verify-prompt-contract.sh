@@ -273,8 +273,8 @@ check_contains plugin/skills/cr/SKILL.md \
   'If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight' \
   "F6a: SKILL.md skips fresh-session preflight for settle rounds"
 check_contains plugin/skills/cr/_shared/preflight.md \
-  'Fresh-session preflight applies only before audit rounds (1a, 2a, 3a).' \
-  "F6b: preflight states fresh-session preflight is audit-only"
+  'Fresh-session preflight applies before audit rounds (1a, 2a, 3a) and the' \
+  "F6b: preflight states fresh-session preflight is audit-and-verification"
 check_not_contains plugin/skills/cr/_shared/preflight.md \
   'per round' \
   "F6b: preflight does not claim fresh sessions are required per round"

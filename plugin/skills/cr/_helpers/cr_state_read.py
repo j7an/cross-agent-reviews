@@ -13,6 +13,7 @@ import jsonschema
 from _cr_lib import (
     CLEAN_3A_TERMINAL,
     VIA_3B_TERMINAL,
+    VIA_3C_TERMINAL,
     atomic_write,
     build_registry,
     canonical_json,
@@ -615,8 +616,9 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='ready_for_implementation' but "
                         f"completed_rounds={completed!r} (must be the clean-3a "
-                        f"terminal {sorted(CLEAN_3A_TERMINAL)} or the via-3b "
-                        f"terminal {sorted(VIA_3B_TERMINAL)})"
+                        f"terminal {sorted(CLEAN_3A_TERMINAL)}, the via-3b "
+                        f"terminal {sorted(VIA_3B_TERMINAL)}, or the via-3c "
+                        f"terminal {sorted(VIA_3C_TERMINAL)})"
                     )
             else:
                 return _err(
