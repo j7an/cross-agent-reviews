@@ -57,24 +57,28 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         else:
             lines.append(f"    {stage:<3}  —")
     if current == "ready_for_implementation":
-        if shape == "clean_3a":
-            # Gate the terminal summary on the clean-3a round file being
-            # present locally, mirroring the via_3b branch below. The read/
-            # router path treats a completed-but-missing round file as a
-            # pending import; printing "READY_FOR_IMPLEMENTATION" while
-            # round-3a.json is absent would contradict that path.
-            rp = artifact_dir / "round-3a.json"
-            if rp.exists():
-                lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
-            else:
-                lines.append("  Terminal:  (round-3a.json pending import)")
+        # Suppress the terminal summary whenever ANY completed round file is
+        # missing locally — not just the last one. The read/router path
+        # (`cr_state_read.py::_classify`) treats any completed-but-missing
+        # stage as a pending import, so a "READY_FOR_IMPLEMENTATION" /
+        # final_status summary would contradict it while the per-stage loop
+        # above already flags the gap. Name the earliest-missing stage in
+        # canonical pipeline order, matching the pending-import scan.
+        missing = next(
+            (
+                stage
+                for stage in ROUND_STAGES
+                if stage in completed and not (artifact_dir / f"round-{stage}.json").exists()
+            ),
+            None,
+        )
+        if missing is not None:
+            lines.append(f"  Terminal:  (round-{missing}.json pending import)")
+        elif shape == "clean_3a":
+            lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
         elif shape == "via_3b":
-            rp = artifact_dir / "round-3b.json"
-            if rp.exists():
-                final_status = json.loads(rp.read_text())["final_status"]
-                lines.append(f"  Terminal:  {final_status}  (via round 3b)")
-            else:
-                lines.append("  Terminal:  (round-3b.json pending import)")
+            final_status = json.loads((artifact_dir / "round-3b.json").read_text())["final_status"]
+            lines.append(f"  Terminal:  {final_status}  (via round 3b)")
         # shape == "invalid": no Terminal line — _integrity_for surfaces the
         # integrity error instead of an inferred final_status.
     return lines
