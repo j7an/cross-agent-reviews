@@ -354,3 +354,291 @@ def test_clean_3a_cross_host_handoff_terminates(tmp_path):
     out = json.loads(read.stdout)
     assert out["pending_import"] is False
     assert out["integrity"] == "OK"
+
+
+def _drive_host_to_3c_pending(host):
+    """Init host and write rounds 1a..3b(accept) locally, ending at round_3c_pending.
+
+    Returns a dict mapping stage name to the stdout emitted by cr_state_write.py
+    for each stage (the canonical round envelopes), so callers can paste them
+    to another host.
+    """
+    init = run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host,
+        stdin="",
+    )
+    assert init.returncode == 0, init.stderr
+    stage_inputs = [
+        ("1a", "round_1a_input.json"),
+        ("1b", "round_1b_input.json"),
+        ("2a", "round_2a_input.json"),
+        ("2b", "round_2b_input.json"),
+        ("3a", "round_3a_input_blocker.json"),
+        ("3b", "round_3b_input_accept.json"),
+    ]
+    envelopes: dict[str, str] = {}
+    for stage, input_file in stage_inputs:
+        r = run(
+            WRITE,
+            [
+                "--slug",
+                "foo",
+                "--artifact-type",
+                "spec",
+                "--artifact-path",
+                "docs/specs/foo-design.md",
+                "--input",
+                str(REPO_ROOT / "tests/fixtures/state_write_inputs" / input_file),
+            ],
+            cwd=host,
+        )
+        assert r.returncode == 0, f"{input_file}: {r.stderr}"
+        envelopes[stage] = r.stdout
+    return envelopes
+
+
+def test_cross_host_corrected_3b_then_3c(tmp_path):
+    """Host A drives 1a→3b(accept), resulting in round_3c_pending.
+    Host B bootstraps from Host A's state.json, pastes rounds 1a..3b,
+    runs a passing 3c locally, and the resulting round-3c.json is pasted
+    back to Host A — advancing both hosts to ready_for_implementation via_3c."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: drive through 3b-accept and capture each round envelope.
+    envelopes = _drive_host_to_3c_pending(host_a)
+
+    state_a = json.loads((host_a / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_a["spec"]["current_stage"] == "round_3c_pending"
+
+    # Host B: bootstrap from Host A's state.json (paste via READ --paste --slug).
+    state_payload = (host_a / ".cross-agent-reviews/foo/state.json").read_text()
+    boot = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=state_payload)
+    assert boot.returncode == 0, boot.stderr
+
+    # Host B: paste-import rounds 1a..3b from Host A in pipeline order.
+    for stage in ("1a", "1b", "2a", "2b", "3a", "3b"):
+        paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=envelopes[stage])
+        assert paste.returncode == 0, f"paste {stage}: {paste.stderr}"
+
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "round_3c_pending"
+
+    # Host B: run a passing 3c locally.
+    # The artifact bytes on Host B (spec.md) are identical to Host A's — no
+    # modification occurred between 3b and 3c, so Host A's copy already
+    # matches the verified_content_hash that 3c will record.
+    write_3c = run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(REPO_ROOT / "tests/fixtures/state_write_inputs/round_3c_input_pass.json"),
+        ],
+        cwd=host_b,
+    )
+    assert write_3c.returncode == 0, write_3c.stderr
+
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "ready_for_implementation"
+
+    # Host A: paste-import the passing round-3c.json from Host B.
+    # Artifact-bytes parity: Host A holds the same spec.md bytes as Host B
+    # (neither host modified the artifact after init), so the local hash on
+    # Host A matches verified_content_hash in the pasted envelope.
+    round_3c_payload = write_3c.stdout
+    paste_3c = run(READ, ["--paste", "--slug", "foo"], cwd=host_a, stdin=round_3c_payload)
+    assert paste_3c.returncode == 0, paste_3c.stderr
+
+    state_a = json.loads((host_a / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_a["spec"]["current_stage"] == "ready_for_implementation"
+    assert set(state_a["spec"]["completed_rounds"]) == {"1a", "1b", "2a", "2b", "3a", "3b", "3c"}
+
+
+def _walk_host_to_3b_pending(host):
+    """Init a host and write rounds 1a..3a locally so it sits at
+    round_3b_pending with all prior round files on disk. The 3a round
+    carries a blocker (round_3a_input_blocker.json) so the pipeline routes
+    to round_3b_pending rather than terminating at ready_for_implementation."""
+    init = run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host,
+        stdin="",
+    )
+    assert init.returncode == 0, init.stderr
+    for stage_input in [
+        "round_1a_input.json",
+        "round_1b_input.json",
+        "round_2a_input.json",
+        "round_2b_input.json",
+        "round_3a_input_blocker.json",
+    ]:
+        r = run(
+            WRITE,
+            [
+                "--slug",
+                "foo",
+                "--artifact-type",
+                "spec",
+                "--artifact-path",
+                "docs/specs/foo-design.md",
+                "--input",
+                str(REPO_ROOT / "tests/fixtures/state_write_inputs" / stage_input),
+            ],
+            cwd=host,
+        )
+        assert r.returncode == 0, f"{stage_input}: {r.stderr}"
+
+
+def test_forward_paste_accepted_3b_routes_to_round_3c_pending(tmp_path):
+    """Forward import of an accepted (CORRECTED_PENDING_VERIFICATION) 3b:
+    Host A drives 1a→3b-accept; Host B walks 1a..3a locally and sits at
+    round_3b_pending. Pasting Host A's accepted round-3b.json must route
+    Host B to round_3c_pending — NOT ready_for_implementation, which would
+    be an immediately-invalid verification_skipped integrity state.
+
+    This exercises the `pending is None` forward path of `_cmd_paste`,
+    which must mirror the conditional 3b routing in `cr_state_write.py`."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host B: walk 1a..3a locally so it genuinely sits at round_3b_pending
+    # with all prior round files on disk (forward path, not backfill).
+    _walk_host_to_3b_pending(host_b)
+
+    # Host A: drive 1a→3b-accept and capture the round envelopes. Done after
+    # Host B's walk so Host A's 3b `emitted_at` is no earlier than Host B's
+    # local round files — keeping the pasted state's last_updated_at >= every
+    # round's emitted_at (a state-integrity invariant checked on read).
+    envelopes = _drive_host_to_3c_pending(host_a)
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "round_3b_pending"
+
+    # Host B: paste-import Host A's accepted round-3b.json.
+    paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=envelopes["3b"])
+    assert paste.returncode == 0, paste.stderr
+
+    state_b = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state_b["spec"]["current_stage"] == "round_3c_pending"
+    assert "3b" in state_b["spec"]["completed_rounds"]
+
+    # A subsequent read must NOT report verification_skipped — the state is
+    # a valid pre-3c handoff, not a broken via_3b terminal.
+    read = run(READ, ["--slug", "foo", "--artifact-type", "spec"], cwd=host_b)
+    assert read.returncode == 0, read.stderr
+    out = json.loads(read.stdout)
+    assert out["integrity"] == "OK"
+    assert "verification" not in read.stderr.lower()
+
+
+def test_backfill_via_3b_terminal_rejects_cpv_3b_paste(tmp_path):
+    """Backfill parity guard: a host bootstrapped with a via_3b terminal
+    (ready_for_implementation + completed rounds 1a..3b) asserts 3b was
+    clean (READY_FOR_IMPLEMENTATION). Pasting a CORRECTED_PENDING_VERIFICATION
+    round-3b.json into that terminal contradicts the bootstrapped shape — a
+    CPV 3b implies a via_3c terminal, not via_3b. The paste must FAIL with a
+    non-zero exit and leave no invalid state behind."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: drive 1a→3b-accept to obtain a genuine accepted (CPV) 3b envelope.
+    envelopes = _drive_host_to_3c_pending(host_a)
+
+    # Host B: walk 1a..3a locally so the real prior round files are on disk
+    # (the 3b paste replays cross-round invariants against round-3a.json, so
+    # genuine round files are required — stubs would crash the invariant
+    # replay before the parity guard is reached).
+    _walk_host_to_3b_pending(host_b)
+    # Hand-edit Host B's state into a via_3b terminal: ready_for_implementation
+    # with completed rounds 1a..3b, but round-3b.json absent on disk so 3b is
+    # the earliest completed-but-missing stage (the pending-import target).
+    state_path = host_b / ".cross-agent-reviews/foo/state.json"
+    state = json.loads(state_path.read_text())
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    spec_dir = host_b / ".cross-agent-reviews/foo/spec"
+
+    # Paste Host A's accepted (CPV) round-3b.json into the via_3b terminal.
+    paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=envelopes["3b"])
+    assert paste.returncode != 0, paste.stdout
+    assert "via_3b" in paste.stderr or "via_3c" in paste.stderr
+    # The contradicting round file must not be written.
+    assert not (spec_dir / "round-3b.json").exists()
+
+
+def test_cross_host_via_3b_with_cpv_is_integrity_error(tmp_path):
+    """A host bootstrapped with a via_3b terminal whose round-3b.json carries
+    CORRECTED_PENDING_VERIFICATION (3b accepted a blocker but 3c never ran)
+    is reported as a STATE_INTEGRITY_ERROR verification_skipped."""
+    host = tmp_path
+    _make_workspace(host)
+
+    # Build a via_3b-terminal state.json (ready_for_implementation + 1a..3b)
+    # directly — we do not use the normal pipeline because we want to hand-craft
+    # the CORRECTED_PENDING_VERIFICATION condition without driving a full review.
+    slug_dir = host / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": completed,
+            "started_at": "2026-05-16T09:00:00Z",
+            "last_updated_at": "2026-05-16T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+    # Write stub round files for 1a..2b and 3a; write round-3b.json carrying
+    # CORRECTED_PENDING_VERIFICATION (accepted_findings non-empty).
+    for stage in ("1a", "1b", "2a", "2b", "3a"):
+        (spec_dir / f"round-{stage}.json").write_text(
+            json.dumps({"stage": stage, "emitted_at": "2026-05-16T10:00:00Z"}) + "\n"
+        )
+    r3b = json.loads(
+        (REPO_ROOT / "tests/fixtures/schema_positive/round_3b_settle_corrected.json").read_text()
+    )
+    r3b["emitted_at"] = "2026-05-16T10:00:00Z"
+    (spec_dir / "round-3b.json").write_text(json.dumps(r3b, indent=2, sort_keys=True) + "\n")
+
+    result = run(READ, ["--slug", "foo", "--artifact-type", "spec"], cwd=host)
+    assert result.returncode == 3
+    assert "final verification (3c) did not run" in result.stderr

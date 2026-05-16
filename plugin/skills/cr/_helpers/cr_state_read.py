@@ -13,6 +13,7 @@ import jsonschema
 from _cr_lib import (
     CLEAN_3A_TERMINAL,
     VIA_3B_TERMINAL,
+    VIA_3C_TERMINAL,
     atomic_write,
     build_registry,
     canonical_json,
@@ -34,12 +35,13 @@ from _cr_lib import (
 from cr_state_write import (
     SETTLE_STAGES,
     _check_slice_plan_frozen,
+    _check_verification_set,
     _cross_round_check_2a,
     _is_clean_3a,
 )
 from jsonschema import Draft202012Validator
 
-ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
+ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b", "3c")
 
 
 def _err(msg: str, *, code: int = 1) -> int:
@@ -106,6 +108,27 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
             "pending_import": False,
             "pending_stage": None,
         }
+    # Verification-skipped: a via_3b-shaped terminal whose 3b corrected
+    # findings must have run 3c. If round-3b.json is on disk and reports
+    # CORRECTED_PENDING_VERIFICATION, the block terminated without the
+    # mandated final verification.
+    if (
+        block.get("current_stage") == "ready_for_implementation"
+        and terminal_shape(completed) == "via_3b"
+    ):
+        rb = artifact_dir / "round-3b.json"
+        if rb.exists():
+            try:
+                r3b = json.loads(rb.read_text())
+            except json.JSONDecodeError:
+                r3b = None
+            if r3b is not None and r3b.get("final_status") == "CORRECTED_PENDING_VERIFICATION":
+                return {
+                    "integrity": "STATE_INTEGRITY_ERROR",
+                    "integrity_reason": "verification_skipped",
+                    "pending_import": False,
+                    "pending_stage": None,
+                }
     rounds_on_disk = _read_round_files(artifact_dir)
     issues: list[str] = []
     pending_stage: str | None = None
@@ -160,6 +183,12 @@ def _cmd_read(repo_root: Path, slug: str, artifact_type: str) -> int:
             return _err(
                 "STATE_INTEGRITY_ERROR: current_stage is ready_for_implementation "
                 "but completed_rounds is neither terminal shape",
+                code=3,
+            )
+        if classification["integrity_reason"] == "verification_skipped":
+            return _err(
+                "STATE_INTEGRITY_ERROR: completed at round 3b with accepted "
+                "findings but final verification (3c) did not run",
                 code=3,
             )
         return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
@@ -306,6 +335,27 @@ def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | N
         err = _settle_paste_invariants(envelope, paired_audit)
         if err is not None:
             return err
+    elif stage == "3c":
+        paired_3b = _read_optional(artifact_dir / "round-3b.json")
+        if paired_3b is None:
+            return "cannot verify 3c paste: paired round-3b.json is not on disk"
+        err = _check_verification_set(envelope["verifications"], paired_3b["accepted_findings"])
+        if err is not None:
+            return err
+        # result must agree with the verification/regression content.
+        # Defensive check: both divergence directions are blocked upstream
+        # before this point (result!="passed" is rejected by _cmd_paste;
+        # result="passed"+not_resolved is rejected by schema allOf), so this
+        # branch is currently unreachable via paste. Kept as a guard against
+        # future schema relaxation.
+        all_resolved = all(v["status"] == "resolved" for v in envelope["verifications"])
+        no_regressions = not envelope["regression_findings"]
+        expected_result = "passed" if all_resolved and no_regressions else "failed"
+        if envelope["result"] != expected_result:
+            return (
+                f"3c result={envelope['result']!r} diverges from its "
+                f"verifications/regressions (expected {expected_result!r})"
+            )
     return None
 
 
@@ -475,7 +525,11 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
             f"diverges from rejected_findings count {len(expected_rejected)}"
         )
     if envelope["stage"] == "3b":
-        expected_final = "CORRECTED_AND_READY" if expected_accepted else "READY_FOR_IMPLEMENTATION"
+        expected_final = (
+            "READY_FOR_IMPLEMENTATION"
+            if not expected_accepted
+            else "CORRECTED_PENDING_VERIFICATION"
+        )
         if envelope.get("final_status") != expected_final:
             return (
                 f"final_status={envelope.get('final_status')!r} diverges "
@@ -548,22 +602,32 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                         f"current_stage='round_1a_pending' but "
                         f"completed_rounds={completed!r} (must be [])"
                     )
+            elif stage == "round_3c_pending":
+                if set(completed) != {"1a", "1b", "2a", "2b", "3a", "3b"}:
+                    return _err(
+                        f"state integrity: bootstrap state.{block_name} has "
+                        f"current_stage='round_3c_pending' but "
+                        f"completed_rounds={completed!r} (must be "
+                        f"['1a','1b','2a','2b','3a','3b'])"
+                    )
             elif stage == "ready_for_implementation":
                 if terminal_shape(completed) == "invalid":
                     return _err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='ready_for_implementation' but "
                         f"completed_rounds={completed!r} (must be the clean-3a "
-                        f"terminal {sorted(CLEAN_3A_TERMINAL)} or the via-3b "
-                        f"terminal {sorted(VIA_3B_TERMINAL)})"
+                        f"terminal {sorted(CLEAN_3A_TERMINAL)}, the via-3b "
+                        f"terminal {sorted(VIA_3B_TERMINAL)}, or the via-3c "
+                        f"terminal {sorted(VIA_3C_TERMINAL)})"
                     )
             else:
                 return _err(
                     f"state integrity: bootstrap state.{block_name} has "
                     f"current_stage={stage!r} which is not legal for a fresh "
                     "bootstrap (must be 'round_1a_pending' with empty "
-                    "completed_rounds, or 'ready_for_implementation' with "
-                    "all rounds completed)"
+                    "completed_rounds, 'round_3c_pending' with "
+                    "completed_rounds=['1a','1b','2a','2b','3a','3b'], or "
+                    "'ready_for_implementation' with all rounds completed)"
                 )
         if instance.get("slug") != slug:
             return _err(
@@ -585,13 +649,23 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     if not state_path.exists():
         return _err(f"no local state.json for slug {slug!r}; bootstrap first")
     state = json.loads(state_path.read_text())
-    is_audit = "agents" in instance
-    schema_name = "round-audit.schema.json" if is_audit else "round-settle.schema.json"
+    if instance.get("stage") == "3c":
+        schema_name = "final-verification.schema.json"
+    elif "agents" in instance:
+        schema_name = "round-audit.schema.json"
+    else:
+        schema_name = "round-settle.schema.json"
     schema = load_schema(schema_name)
     try:
         Draft202012Validator(schema, registry=registry).validate(instance)
     except jsonschema.ValidationError as e:
         return _err(f"round schema violation: {e.message}")
+    if instance.get("stage") == "3c" and instance.get("result") != "passed":
+        return _err(
+            f"3c paste: result={instance.get('result')!r} — only a passing round-3c.json "
+            "is paste-importable; failed round-3c-attempt-NNN.json files are host-local "
+            "diagnostics"
+        )
     if instance["slug"] != slug:
         return _err(f"slug mismatch: paste has {instance['slug']!r}, --slug says {slug!r}")
     artifact_type = instance["artifact_type"]
@@ -644,12 +718,67 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "clean-3a parity: state is a via_3b terminal but the pasted "
                 "round-3a.json is clean (a clean 3a terminates without running 3b)"
             )
+    # 3b parity for terminal backfill: when the pending import is the 3b
+    # round of a `ready_for_implementation` block, the pasted 3b's
+    # final_status MUST agree with the block's terminal shape. A
+    # ready_for_implementation terminal whose completed rounds are 1a..3b is
+    # a via_3b terminal, which asserts 3b was clean (final_status
+    # READY_FOR_IMPLEMENTATION). An accepted 3b carries
+    # CORRECTED_PENDING_VERIFICATION and implies a via_3c terminal — 3c must
+    # still run — so a CPV 3b contradicts the bootstrapped via_3b shape. The
+    # state-update block below is skipped for a pending backfill, so without
+    # this check a CPV round-3b.json gets written into a via_3b terminal,
+    # leaving an immediately-invalid verification_skipped state.
+    if (
+        instance["stage"] == "3b"
+        and block["current_stage"] == "ready_for_implementation"
+        and terminal_shape(block["completed_rounds"]) == "via_3b"
+        and instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    ):
+        return _err(
+            "3b parity: state is a via_3b terminal but the pasted "
+            "round-3b.json is CORRECTED_PENDING_VERIFICATION (an accepted "
+            "3b implies a via_3c terminal — final verification 3c must "
+            "still run — not a via_3b terminal)"
+        )
+    # 3c artifact-bytes parity: a passing round-3c.json pins the bytes it
+    # verified. The receiving host must hold those exact bytes, else the
+    # via_3c terminal would claim a content_hash that disagrees with the
+    # on-disk artifact.
+    if instance["stage"] == "3c":
+        local_hash = compute_content_hash(repo_root / block["path"])
+        if local_hash != instance["verified_content_hash"]:
+            return _err(
+                "3c paste: local artifact bytes do not match the pasted "
+                "verified_content_hash — the operator must also carry the "
+                "verified artifact to this host before importing the passing "
+                "round-3c.json"
+            )
+        # Backfill into an already-terminal via_3c state: state is not
+        # rewritten, so block.content_hash must already be correct.
+        if pending == "3c" and block["content_hash"] != instance["verified_content_hash"]:
+            return _err(
+                "3c paste: state.json content_hash for a via_3c terminal "
+                "disagrees with the pasted round-3c.json verified_content_hash "
+                "(bootstrapped state is inconsistent)"
+            )
     body = canonical_json(instance)
     atomic_write(artifact_dir / f"round-{instance['stage']}.json", body)
     if pending is None:
         block["completed_rounds"] = sorted({*block["completed_rounds"], instance["stage"]})
         if instance["stage"] == "3a" and _is_clean_3a(instance):
             next_stage = "ready_for_implementation"
+        elif (
+            instance["stage"] == "3b"
+            and instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+        ):
+            # Mirror the conditional 3b routing in `cr_state_write.py`: an
+            # accepted 3b (the schema biconditional forces every accepted 3b
+            # to carry CORRECTED_PENDING_VERIFICATION) must run final
+            # verification 3c, not terminate. Routing it straight to
+            # ready_for_implementation would yield an immediately-invalid
+            # verification_skipped integrity state.
+            next_stage = "round_3c_pending"
         else:
             next_stage = {
                 "1a": "round_1b_pending",
@@ -658,6 +787,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "2b": "round_3a_pending",
                 "3a": "round_3b_pending",
                 "3b": "ready_for_implementation",
+                "3c": "ready_for_implementation",
             }[instance["stage"]]
         block["current_stage"] = next_stage
         block["last_updated_at"] = instance["emitted_at"]
@@ -669,6 +799,8 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         # local-only state for the same logical settle round.
         if instance["stage"] in SETTLE_STAGES:
             block["content_hash"] = compute_content_hash(repo_root / block["path"])
+        elif instance["stage"] == "3c":
+            block["content_hash"] = instance["verified_content_hash"]
         state[artifact_type] = block
         atomic_write(state_path, canonical_json(state))
     sys.stdout.write(body)

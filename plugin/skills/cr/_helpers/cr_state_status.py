@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from _cr_lib import find_repo_root, state_dir, terminal_shape, validate_slug
 
-ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
+ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b", "3c")
 
 
 def _humanize_age(then_iso: str, now: datetime) -> str:
@@ -35,6 +36,8 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
     current = block["current_stage"]
     shape = terminal_shape(block["completed_rounds"])
     is_clean_3a_terminal = current == "ready_for_implementation" and shape == "clean_3a"
+    is_via_3b_terminal = current == "ready_for_implementation" and shape == "via_3b"
+    attempts = sorted(artifact_dir.glob("round-3c-attempt-*.json")) if artifact_dir.exists() else []
     for stage in ROUND_STAGES:
         if stage == "3b" and is_clean_3a_terminal:
             # 3b is neither completed nor pending for a clean-3a terminal;
@@ -43,6 +46,10 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
             # the clean_3a completed_rounds set ({1a,1b,2a,2b,3a}) but has NOT
             # terminated, so it must still render "PENDING", not "skipped".
             lines.append(f"    {stage:<3}  skipped (clean 3a)")
+        elif stage == "3c" and is_clean_3a_terminal:
+            lines.append(f"    {stage:<3}  skipped (clean 3a)")
+        elif stage == "3c" and is_via_3b_terminal:
+            lines.append(f"    {stage:<3}  skipped (3b accepted zero findings)")
         elif stage in completed:
             rp = artifact_dir / f"round-{stage}.json"
             if rp.exists():
@@ -52,6 +59,14 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
                 )
             else:
                 lines.append(f"    {stage:<3}  completed  (round file missing — pending import)")
+        elif stage == "3c" and current == "round_3c_pending":
+            if attempts:
+                lines.append(
+                    f"    {stage:<3}  FAILED  (final verification — "
+                    f"{len(attempts)} failed attempt(s))"
+                )
+            else:
+                lines.append(f"    {stage:<3}  PENDING  (final verification)")
         elif current == f"round_{stage}_pending":
             lines.append(f"    {stage:<3}  PENDING")
         else:
@@ -66,9 +81,9 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         # canonical pipeline order, matching the pending-import scan.
         missing = next(
             (
-                stage
-                for stage in ROUND_STAGES
-                if stage in completed and not (artifact_dir / f"round-{stage}.json").exists()
+                s
+                for s in ROUND_STAGES
+                if s in completed and not (artifact_dir / f"round-{s}.json").exists()
             ),
             None,
         )
@@ -77,10 +92,36 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         elif shape == "clean_3a":
             lines.append("  Terminal:  READY_FOR_IMPLEMENTATION  (clean 3a - round 3b skipped)")
         elif shape == "via_3b":
-            final_status = json.loads((artifact_dir / "round-3b.json").read_text())["final_status"]
-            lines.append(f"  Terminal:  {final_status}  (via round 3b)")
+            rb = artifact_dir / "round-3b.json"
+            cpv = False
+            if rb.exists():
+                with contextlib.suppress(json.JSONDecodeError):
+                    cpv = (
+                        json.loads(rb.read_text()).get("final_status")
+                        == "CORRECTED_PENDING_VERIFICATION"
+                    )
+            if not cpv:
+                lines.append(
+                    "  Terminal:  READY_FOR_IMPLEMENTATION  (via round 3b - zero accepted)"
+                )
+            # cpv==True: no Terminal line — _integrity_for surfaces the error instead
+        elif shape == "via_3c":
+            final_status = json.loads((artifact_dir / "round-3c.json").read_text())["final_status"]
+            lines.append(f"  Terminal:  {final_status}  (via round 3c - final verification passed)")
         # shape == "invalid": no Terminal line — _integrity_for surfaces the
         # integrity error instead of an inferred final_status.
+    elif current == "round_3c_pending":
+        if attempts:
+            latest = json.loads(attempts[-1].read_text())
+            unresolved = sum(1 for v in latest["verifications"] if v["status"] == "not_resolved")
+            regressions = len(latest["regression_findings"])
+            lines.append(
+                f"  Final verification:  FAILED  (attempt {latest['attempt_number']} - "
+                f"{unresolved} blocker(s) unresolved, {regressions} regression(s); "
+                f"fix the artifact and run /cr)"
+            )
+        else:
+            lines.append("  Final verification:  PENDING  (run /cr to dispatch round 3c)")
     return lines
 
 
@@ -95,6 +136,18 @@ def _integrity_for(state: dict, slug_dir: Path) -> str:
         ):
             return "STATE_INTEGRITY_ERROR"
         artifact_dir = slug_dir / art
+        if (
+            block["current_stage"] == "ready_for_implementation"
+            and terminal_shape(block["completed_rounds"]) == "via_3b"
+        ):
+            rb = artifact_dir / "round-3b.json"
+            if rb.exists():
+                try:
+                    r3b = json.loads(rb.read_text())
+                except json.JSONDecodeError:
+                    r3b = None
+                if r3b is not None and r3b.get("final_status") == "CORRECTED_PENDING_VERIFICATION":
+                    return "STATE_INTEGRITY_ERROR"
         max_emitted = ""
         for stage in block["completed_rounds"]:
             rp = artifact_dir / f"round-{stage}.json"

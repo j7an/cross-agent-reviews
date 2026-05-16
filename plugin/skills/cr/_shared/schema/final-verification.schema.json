@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://j7an.github.io/cross-agent-reviews/schema/v1/final-verification.json",
+  "title": "FinalVerification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "round", "stage", "schema_version", "slug",
+    "artifact_type", "artifact_path", "emitted_at",
+    "attempt_number", "verified_content_hash",
+    "verifications", "regression_findings", "result", "prior_attempts"
+  ],
+  "properties": {
+    "round": {"const": 3},
+    "stage": {"const": "3c"},
+    "schema_version": {"const": 1},
+    "slug": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "artifact_type": {"type": "string", "enum": ["spec", "plan"]},
+    "artifact_path": {"type": "string", "minLength": 1},
+    "emitted_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "attempt_number": {"type": "integer", "minimum": 1},
+    "verified_content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "verifications": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/verification"}
+    },
+    "regression_findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/regression_finding"}
+    },
+    "result": {"type": "string", "enum": ["passed", "failed"]},
+    "final_status": {"const": "CORRECTED_AND_READY"},
+    "prior_attempts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/prior_attempt"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"result": {"const": "passed"}}},
+      "then": {
+        "required": ["final_status"],
+        "properties": {
+          "verifications": {"items": {"properties": {"status": {"const": "resolved"}}}},
+          "regression_findings": {"maxItems": 0}
+        }
+      },
+      "else": {"not": {"required": ["final_status"]}}
+    }
+  ],
+  "$defs": {
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round_3a_finding_id", "status", "evidence"],
+      "properties": {
+        "round_3a_finding_id": {"type": "string", "pattern": "^R3-[1-6]-[0-9]{3}$"},
+        "status": {"type": "string", "enum": ["resolved", "not_resolved"]},
+        "evidence": {"type": "string", "minLength": 1}
+      }
+    },
+    "regression_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "location", "severity", "finding", "why_it_matters", "suggested_direction"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^R3C-[0-9]{3}$"},
+        "location": {"type": "string", "minLength": 1},
+        "severity": {"const": "blocker"},
+        "finding": {"type": "string", "minLength": 1},
+        "why_it_matters": {"type": "string", "minLength": 1},
+        "suggested_direction": {"type": "string", "minLength": 1}
+      }
+    },
+    "prior_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt_number", "verified_content_hash", "not_resolved_finding_ids", "regression_count", "emitted_at"],
+      "properties": {
+        "attempt_number": {"type": "integer", "minimum": 1},
+        "verified_content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "not_resolved_finding_ids": {"type": "array", "items": {"type": "string", "pattern": "^R3-[1-6]-[0-9]{3}$"}},
+        "regression_count": {"type": "integer", "minimum": 0},
+        "emitted_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"}
+      }
+    }
+  }
+}

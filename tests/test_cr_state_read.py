@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _cr_lib import compute_content_hash
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPERS = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers"
@@ -313,6 +314,26 @@ def test_bootstrap_paste_rejects_round_1a_pending_with_nonempty_completed(worksp
     result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
     assert result.returncode == 1
     assert "round_1a_pending" in result.stderr
+
+
+def test_bootstrap_paste_accepts_round_3c_pending(workspace):
+    """A bootstrap with current_stage='round_3c_pending' and
+    completed_rounds containing all six prior stages is the canonical
+    pre-3c cross-host handoff. Must succeed."""
+    payload = _bootstrap_payload("round_3c_pending", ["1a", "1b", "2a", "2b", "3a", "3b"])
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_paste_accepts_via_3c_terminal(workspace):
+    """A bootstrap with current_stage='ready_for_implementation' and
+    completed_rounds containing all seven stages (the via-3c terminal)
+    is a valid terminal cross-host handoff. Must succeed."""
+    payload = _bootstrap_payload(
+        "ready_for_implementation", ["1a", "1b", "2a", "2b", "3a", "3b", "3c"]
+    )
+    result = run(SCRIPT, ["--paste", "--slug", "2026-05-07-issue-1"], cwd=workspace, stdin=payload)
+    assert result.returncode == 0, result.stderr
 
 
 def test_paste_round_wrong_stage_rejected(workspace_with_1a, fixtures_dir):
@@ -689,22 +710,22 @@ def test_paste_2b_rejects_revisit_of_resolved_verification(workspace_with_1a):
 
 def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtures_dir):
     """A 3b paste whose `final_status` does not match the shape of
-    `accepted_findings` must be rejected. `_build_settle_envelope` derives
-    `final_status` (CORRECTED_AND_READY when accepted_findings is non-empty,
-    else READY_FOR_IMPLEMENTATION); a hand-built paste could lie about
-    terminal status while still parsing under the schema."""
+    `accepted_findings` must be rejected. The schema biconditional enforces
+    empty accepted_findings → READY_FOR_IMPLEMENTATION and non-empty →
+    CORRECTED_PENDING_VERIFICATION; a hand-built paste could lie about
+    terminal status and must be caught."""
     base_3b = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
     base_3b["slug"] = "foo"
     base_3b["artifact_type"] = "spec"
     base_3b["artifact_path"] = "docs/specs/foo-design.md"
-    # Empty accepted_findings should imply READY_FOR_IMPLEMENTATION; lying.
+    # Empty accepted_findings should imply READY_FOR_IMPLEMENTATION; lying with CPV.
     base_3b["accepted_findings"] = []
     base_3b["adjudications"] = []
     base_3b["adjudication_summary"] = {"accepted": 0, "rejected": 0}
     base_3b["rejected_findings"] = []
     base_3b["changelog"] = []
     base_3b["self_review"] = []
-    base_3b["final_status"] = "CORRECTED_AND_READY"
+    base_3b["final_status"] = "CORRECTED_PENDING_VERIFICATION"
     # Walk workspace to round_3b_pending so the paste-stage check accepts a 3b.
     state_path = workspace_with_1a / ".cross-agent-reviews/foo/state.json"
     state = json.loads(state_path.read_text())
@@ -728,7 +749,9 @@ def test_paste_settle_3b_final_status_mismatch_rejected(workspace_with_1a, fixtu
         SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(base_3b)
     )
     assert result.returncode == 1
-    assert "final_status" in result.stderr
+    # The schema biconditional rejects empty accepted_findings + CORRECTED_PENDING_VERIFICATION
+    # with a "schema violation" error; the exact message text varies by jsonschema version.
+    assert "schema violation" in result.stderr.lower() or "final_status" in result.stderr
 
 
 def test_paste_settle_refreshes_content_hash(workspace_with_1a, fixtures_dir):
@@ -1043,6 +1066,134 @@ def test_paste_3a_terminal_backfill_accepts_clean(workspace_with_1a, fixtures_di
     assert (spec_dir / "round-3a.json").exists()
 
 
+def test_round_3c_pending_classifies_ok(workspace):
+    """A spec block with current_stage=round_3c_pending, completed_rounds
+    {1a..3b}, and all six round files on disk classifies as integrity OK with
+    no pending import — a missing round-3c.json is not a pending import
+    because 3c is not in completed_rounds."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_3c_pending",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        (spec_dir / f"round-{stage}.json").write_text(
+            json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+        )
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["integrity"] == "OK"
+    assert payload["pending_import"] is False
+
+
+@pytest.fixture
+def cpv_terminal_workspace(workspace):
+    """Workspace with a via_3b terminal (current_stage=ready_for_implementation,
+    completed_rounds 1a..3b) whose round-3b.json carries
+    CORRECTED_PENDING_VERIFICATION — i.e. 3b accepted findings but 3c never ran."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        if stage == "3b":
+            # Use the corrected 3b fixture (CORRECTED_PENDING_VERIFICATION, non-empty accepted_findings)
+            r3b = json.loads(
+                (
+                    Path(__file__).resolve().parent
+                    / "fixtures/schema_positive/round_3b_settle_corrected.json"
+                ).read_text()
+            )
+            r3b["emitted_at"] = "2026-05-07T10:00:00Z"
+            (spec_dir / "round-3b.json").write_text(
+                json.dumps(r3b, indent=2, sort_keys=True) + "\n"
+            )
+        else:
+            (spec_dir / f"round-{stage}.json").write_text(
+                json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+            )
+    return workspace
+
+
+def test_via_3b_terminal_with_cpv_is_integrity_error(cpv_terminal_workspace):
+    """A ready_for_implementation block with the via_3b shape whose
+    round-3b.json carries CORRECTED_PENDING_VERIFICATION terminated without
+    the mandated 3c — an integrity error."""
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=cpv_terminal_workspace)
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["integrity"] == "STATE_INTEGRITY_ERROR"
+    assert payload["integrity_reason"] == "verification_skipped"
+    assert "final verification (3c) did not run" in result.stderr
+
+
+def test_malformed_round_3b_in_via_3b_terminal_does_not_crash(workspace):
+    """A via_3b terminal whose round-3b.json exists but is malformed (invalid
+    JSON) must not raise an unhandled JSONDecodeError. The verification-skipped
+    check should fall through silently; the downstream _read_round_files call
+    then detects the malformed file and renames it aside. The script must exit
+    cleanly (returncode 0 or 3) and must not emit a Python traceback."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    completed = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": completed,
+            "started_at": "2026-05-07T09:00:00Z",
+            "last_updated_at": "2026-05-07T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    for stage in completed:
+        if stage == "3b":
+            # Write a malformed (truncated/corrupt) round-3b.json.
+            (spec_dir / "round-3b.json").write_text("{not json")
+        else:
+            (spec_dir / f"round-{stage}.json").write_text(
+                json.dumps({"stage": stage, "emitted_at": "2026-05-07T10:00:00Z"}) + "\n"
+            )
+    result = run(SCRIPT, ["--slug", "foo", "--artifact-type", "spec"], cwd=workspace)
+    assert result.returncode in (0, 3), (
+        f"Expected clean exit (0 or 3), got {result.returncode}.\nstderr: {result.stderr}"
+    )
+    assert "Traceback" not in result.stderr, (
+        "Unhandled exception in script output — JSONDecodeError was not caught.\n"
+        f"stderr: {result.stderr}"
+    )
+
+
 def test_pending_import_uses_canonical_round_order(workspace):
     """A terminal bootstrap may carry completed_rounds in any order
     (`terminal_shape` is order-insensitive). The pending-import scan must
@@ -1069,3 +1220,201 @@ def test_pending_import_uses_canonical_round_order(workspace):
     out = json.loads(result.stdout)
     assert out["pending_import"] is True
     assert out["pending_stage"] == "1a"
+
+
+# ---------------------------------------------------------------------------
+# 3c paste-import helpers and fixtures
+# ---------------------------------------------------------------------------
+
+
+def _walk_workspace_to_3c_pending(workspace):
+    """Advance workspace state through 1a → 1b → 2a → 2b → 3a(blocker) → 3b(accept)
+    so that a 3c paste is the expected stage. Returns (spec_dir, state_path)."""
+    run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+    for stage_input in [
+        "round_1a_input.json",
+        "round_1b_input.json",
+        "round_2a_input.json",
+        "round_2b_input.json",
+        "round_3a_input_blocker.json",
+        "round_3b_input_accept.json",
+    ]:
+        r = run(
+            WRITE,
+            [
+                "--slug",
+                "foo",
+                "--artifact-type",
+                "spec",
+                "--artifact-path",
+                "docs/specs/foo-design.md",
+                "--input",
+                str(REPO_ROOT / "tests/fixtures/state_write_inputs" / stage_input),
+            ],
+            cwd=workspace,
+        )
+        assert r.returncode == 0, f"{stage_input}: {r.stderr}"
+    return (
+        workspace / ".cross-agent-reviews/foo/spec",
+        workspace / ".cross-agent-reviews/foo/state.json",
+    )
+
+
+@pytest.fixture
+def host_b_at_3c_pending(workspace):
+    """Workspace at round_3c_pending with round-1a..round-3b.json on disk and
+    the artifact file present. round-3b.json has final_status=CORRECTED_PENDING_VERIFICATION
+    with accepted_findings containing exactly one entry with id R3-1-001."""
+    _walk_workspace_to_3c_pending(workspace)
+    return workspace
+
+
+def build_passing_3c_for(workspace: Path) -> dict:
+    """Build a schema-valid passing round-3c.json dict for the given workspace.
+
+    Reads the on-disk round-3b.json to discover accepted_findings ids so the
+    verifications cover exactly what 3b accepted. The verified_content_hash is
+    computed from the workspace's actual artifact bytes."""
+    spec_dir = workspace / ".cross-agent-reviews/foo/spec"
+    r3b = json.loads((spec_dir / "round-3b.json").read_text())
+    artifact_path = workspace / r3b["artifact_path"]
+    verified_hash = compute_content_hash(artifact_path)
+    accepted_ids = [f["id"] for f in r3b["accepted_findings"]]
+    verifications = [
+        {
+            "round_3a_finding_id": fid,
+            "status": "resolved",
+            "evidence": f"Verified: {fid} is now addressed in the artifact.",
+        }
+        for fid in accepted_ids
+    ]
+    return {
+        "round": 3,
+        "stage": "3c",
+        "schema_version": 1,
+        "slug": r3b["slug"],
+        "artifact_type": r3b["artifact_type"],
+        "artifact_path": r3b["artifact_path"],
+        "emitted_at": "2026-05-16T12:00:00Z",
+        "attempt_number": 1,
+        "verified_content_hash": verified_hash,
+        "verifications": verifications,
+        "regression_findings": [],
+        "result": "passed",
+        "final_status": "CORRECTED_AND_READY",
+        "prior_attempts": [],
+    }
+
+
+def run_paste(workspace: Path, slug: str, stdin: str):
+    """Invoke cr_state_read.py --paste for the given workspace and slug."""
+    return run(SCRIPT, ["--paste", "--slug", slug], cwd=workspace, stdin=stdin)
+
+
+@pytest.fixture
+def via_3c_missing_round3c(workspace):
+    """Workspace bootstrapped to a via_3c terminal (current_stage=ready_for_implementation,
+    completed_rounds {1a..3c}) with round-1a..round-3b.json present but round-3c.json
+    ABSENT (pending_import would report pending_stage=='3c').
+    state.spec.content_hash is deliberately stale (does not match the artifact)."""
+    _walk_workspace_to_3c_pending(workspace)
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    state_path = slug_dir / "state.json"
+    state = json.loads(state_path.read_text())
+    # Advance to via_3c terminal WITHOUT writing round-3c.json
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = sorted(set(state["spec"]["completed_rounds"]) | {"3c"})
+    # Set a stale content_hash that does NOT match the artifact
+    state["spec"]["content_hash"] = "sha256:" + "a" * 64
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return workspace
+
+
+def test_paste_passing_3c_advances_to_via_3c(host_b_at_3c_pending):
+    """A passing round-3c.json pasted onto a host at round_3c_pending whose
+    local artifact matches verified_content_hash advances it to via_3c."""
+    passing_3c = build_passing_3c_for(host_b_at_3c_pending)
+    result = run_paste(host_b_at_3c_pending, slug="foo", stdin=json.dumps(passing_3c))
+    assert result.returncode == 0, result.stderr
+    state = json.loads((host_b_at_3c_pending / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+    assert "3c" in state["spec"]["completed_rounds"]
+    assert state["spec"]["content_hash"] == passing_3c["verified_content_hash"]
+
+
+def test_paste_3c_rejects_artifact_hash_mismatch(host_b_at_3c_pending):
+    passing_3c = build_passing_3c_for(host_b_at_3c_pending)
+    passing_3c["verified_content_hash"] = "sha256:" + "f" * 64  # wrong hash
+    result = run_paste(host_b_at_3c_pending, slug="foo", stdin=json.dumps(passing_3c))
+    assert result.returncode == 1
+    assert "local artifact bytes do not match" in result.stderr
+
+
+def test_paste_failed_3c_attempt_rejected(host_b_at_3c_pending):
+    failed = build_passing_3c_for(host_b_at_3c_pending)
+    failed["result"] = "failed"
+    del failed["final_status"]
+    failed["verifications"][0]["status"] = "not_resolved"
+    result = run_paste(host_b_at_3c_pending, slug="foo", stdin=json.dumps(failed))
+    assert result.returncode == 1
+    assert "result" in result.stderr.lower()
+
+
+def test_paste_3c_backfill_rejects_stale_state_hash(via_3c_missing_round3c):
+    """Pending-import backfill of round-3c.json into an already-terminal via_3c
+    state: the pasted verified_content_hash matches the LOCAL ARTIFACT but the
+    bootstrapped state.spec.content_hash is stale (a different value). The
+    backfill path does not rewrite state.json, so this inconsistency must be
+    caught at paste time, not silently kept."""
+    passing_3c = build_passing_3c_for(via_3c_missing_round3c)
+    # sanity: the envelope matches the on-disk artifact ...
+    local = compute_content_hash(via_3c_missing_round3c / "docs/specs/foo-design.md")
+    assert passing_3c["verified_content_hash"] == local
+    # ... but state.spec.content_hash was bootstrapped with a stale value
+    state = json.loads((via_3c_missing_round3c / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["content_hash"] != passing_3c["verified_content_hash"]
+    result = run_paste(via_3c_missing_round3c, slug="foo", stdin=json.dumps(passing_3c))
+    assert result.returncode == 1
+    assert "content_hash" in result.stderr
+    assert "inconsistent" in result.stderr
+
+
+def test_paste_3c_rejects_verification_set_mismatch(host_b_at_3c_pending):
+    """_paste_cross_round_invariants rejects a 3c whose verifications do not
+    cover exactly the round-3b accepted_findings: a finding_id not in
+    accepted_findings causes 'not accepted by 3b'."""
+    passing_3c = build_passing_3c_for(host_b_at_3c_pending)
+    # Mutate the single verification to reference a finding id that is NOT in
+    # round-3b accepted_findings, triggering the 'verifies finding id(s) not
+    # accepted by 3b' rejection in _check_verification_set.
+    passing_3c["verifications"][0]["round_3a_finding_id"] = "R3-2-999"
+    result = run_paste(host_b_at_3c_pending, slug="foo", stdin=json.dumps(passing_3c))
+    assert result.returncode == 1
+    # The error comes from _check_verification_set; it emits EITHER
+    # "missing a verification" (for the omitted accepted id) OR
+    # "not accepted by 3b" (for the injected unknown id).
+    assert "missing a verification" in result.stderr or "not accepted by 3b" in result.stderr
+
+
+# NOTE: the _paste_cross_round_invariants 3c result-divergence check (lines
+# 344-352) is defensive and unreachable via paste:
+#   • result="failed" + all-resolved verifications: caught upstream by the
+#     explicit "only a passing round-3c.json is paste-importable" check
+#     (result != "passed") before _paste_cross_round_invariants is called.
+#   • result="passed" + not_resolved verification: caught by schema validation
+#     (the allOf/if-then enforces status==resolved on every verification when
+#     result=="passed") before _paste_cross_round_invariants is called.
+# A test for either path would be test theater — it cannot reach the branch
+# it claims to cover. The check is retained as a defense-in-depth guard
+# against future schema relaxation.

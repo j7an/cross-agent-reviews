@@ -164,6 +164,14 @@ def test_canonical_json_indent_2():
         # duplicate item: rejected before set comparison, even though the
         # *set* equals the clean_3a set
         (["1a", "1a", "1b", "2a", "2b", "3a"], "invalid"),
+        # via_3c: the full seven-round terminal
+        (["1a", "1b", "2a", "2b", "3a", "3b", "3c"], "via_3c"),
+        # order-insensitive for the seven-round set
+        (["3c", "3a", "2b", "1a", "3b", "1b", "2a"], "via_3c"),
+        # six-round set with 3c but missing 3b -> invalid
+        (["1a", "1b", "2a", "2b", "3a", "3c"], "invalid"),
+        # duplicate in an otherwise-via_3c list -> invalid
+        (["1a", "1b", "2a", "2b", "3a", "3b", "3c", "3c"], "invalid"),
     ],
 )
 def test_terminal_shape(completed, expected):

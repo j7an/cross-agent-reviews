@@ -1,6 +1,6 @@
 ---
 name: cr
-description: State-driven 3-round / 6-step cross-agent spec/plan review pipeline. Use `/cr` to advance the active pipeline. Reads `.cross-agent-reviews/<slug>/state.json`, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b, terminating early when round 3a is clean), validates output via JSON Schema, and persists state. Audit rounds (1a, 2a, 3a) require fresh sessions; settle rounds (1b, 2b, 3b) do not. Supports cross-host paste-import for distributed reviews.
+description: State-driven cross-agent spec/plan review pipeline. Use `/cr` to advance the active pipeline. Reads `.cross-agent-reviews/<slug>/state.json`, dispatches the next round (1a → 1b → 2a → 2b → 3a → 3b → 3c), terminating early when round 3a is clean and running final verification 3c only when round 3b corrects accepted blockers. Audit rounds (1a, 2a, 3a) and the verification round (3c) require fresh sessions; settle rounds (1b, 2b, 3b) do not. Supports cross-host paste-import for distributed reviews.
 ---
 
 [Full attribution](_shared/attribution.md)
@@ -73,9 +73,10 @@ If `pending_import: true` in the read output, the operator switched hosts; route
 
 If `state.<artifact_type>.current_stage == "ready_for_implementation"`, the pipeline has already terminated for this artifact. Do NOT proceed to §3 or §4. Classify the terminal shape from `state.<artifact_type>.completed_rounds`:
 
-- **via 3b** — `completed_rounds` is the six-round set `{1a, 1b, 2a, 2b, 3a, 3b}`. Read `final_status` from `<state-dir>/<slug>/<artifact_type>/round-3b.json` directly (the `cr_state_read.py` payload carries only state and integrity fields; `final_status` lives in the round-3b envelope per Phase 5), then emit §5's terminal message.
-- **clean 3a** — `completed_rounds` is the five-round set `{1a, 1b, 2a, 2b, 3a}` (no `3b`). `final_status` is the constant `READY_FOR_IMPLEMENTATION`; do NOT read `round-3b.json` — it does not exist for a clean-3a termination. Emit §5's clean-3a terminal message.
-- **invalid** — `completed_rounds` is neither set. `cr_state_read.py` reports `integrity == "STATE_INTEGRITY_ERROR"` (caught by the integrity check above); halt with `BLOCKED:state-integrity`. Never infer a `final_status` for a malformed terminal state.
+- **via 3c** — `completed_rounds` is the seven-round set `{1a, 1b, 2a, 2b, 3a, 3b, 3c}`. Read `final_status` from `<state-dir>/<slug>/<artifact_type>/round-3c.json` (always `CORRECTED_AND_READY`), then emit §5's via-3c terminal message.
+- **via 3b** — `completed_rounds` is the six-round set `{1a, 1b, 2a, 2b, 3a, 3b}`. Read `final_status` from `round-3b.json`; it MUST be `READY_FOR_IMPLEMENTATION`. If it is `CORRECTED_PENDING_VERIFICATION`, `cr_state_read.py` reports `STATE_INTEGRITY_ERROR` (caught by the integrity check above) — halt with `BLOCKED:state-integrity`.
+- **clean 3a** — `completed_rounds` is the five-round set `{1a, 1b, 2a, 2b, 3a}` (no `3b`). `final_status` is the constant `READY_FOR_IMPLEMENTATION`; do NOT read `round-3b.json`.
+- **invalid** — `completed_rounds` is none of these sets. `cr_state_read.py` reports `integrity == "STATE_INTEGRITY_ERROR"`; halt with `BLOCKED:state-integrity`.
 
 A rerun of `/cr` after completion is a status query, not a new dispatch.
 
@@ -93,7 +94,7 @@ Exit code 2 with `SPEC_DRIFT_DETECTED` on stderr means the spec file changed on 
 | `accept-drift` (assert the plan still matches the new spec) | `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --resolve-drift accept`. The script atomically refreshes `state.plan.spec_hash_at_start` to the current hash. Re-enter §2 with the new state. |
 | `abort` (resolve out of band) | Halt with `BLOCKED:spec-drift` and surface the diagnostic. The operator decides what to do; rerunning `/cr` after manual edits resumes the pipeline. |
 
-If next stage is an audit round (`1a`, `2a`, `3a`), execute the **fresh-session preflight** from [_shared/preflight.md](_shared/preflight.md) BEFORE doing anything else. If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight (per §5.4 of the spec).
+If next stage is an audit round (`1a`, `2a`, `3a`) **or the verification round (`3c`)**, execute the **fresh-session preflight** from [_shared/preflight.md](_shared/preflight.md) BEFORE doing anything else. If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight (per §5.4 of the spec).
 
 ## 3. Cross-host paste-import branch
 
@@ -110,7 +111,7 @@ If the operator's cue indicates a cross-host transition or local-only signal #2 
 
 ## 4. Dispatch the round procedure
 
-Map the derived stage token to its round file by suffix — audit rounds (`1a`, `2a`, `3a`) live in `rounds/<stage>-audit.md`; settle rounds (`1b`, `2b`, `3b`) live in `rounds/<stage>-settle.md`. Read that file and execute the procedure there. Each round file:
+Map the derived stage token to its round file by suffix — audit rounds (`1a`, `2a`, `3a`) live in `rounds/<stage>-audit.md`; settle rounds (`1b`, `2b`, `3b`) live in `rounds/<stage>-settle.md`; the verification round (`3c`) lives in `rounds/3c-verify.md`. Read that file and execute the procedure there. Each round file:
 
 - Defines or carries the slice plan.
 - Dispatches per-slice sub-agents using the parameterized
@@ -141,9 +142,21 @@ operator (per §9.2 of the spec):
   > Round Nb complete (P accepted, Q rejected). Open a fresh session and
   > run /cr to continue with round (N+1)a (a fresh session is required
   > before audit rounds).
-- After 3b (terminal):
-  > Pipeline complete. final_status: <READY_FOR_IMPLEMENTATION |
-  > CORRECTED_AND_READY>. <Description per status>.
+- After a **3b that accepted findings** — next is the final verification round 3c:
+  > Round 3b complete (P accepted, Q rejected) — final blockers corrected.
+  > Final verification (round 3c) is required. Open a fresh session and run
+  > /cr to verify the corrections.
+- After a **3b that accepted zero findings** (terminal):
+  > Pipeline complete. final_status: READY_FOR_IMPLEMENTATION (round 3b
+  > rejected all final blockers). The artifact is ready for implementation.
+- After a **passing 3c** (terminal):
+  > Final verification passed. Pipeline complete. final_status:
+  > CORRECTED_AND_READY — every accepted final blocker was independently
+  > verified as resolved. The artifact is ready for implementation.
+- After a **failing 3c** (non-terminal, blocked):
+  > Final verification FAILED (attempt N): K accepted blocker(s) still
+  > unresolved, R regression(s) introduced. See round-3c-attempt-NNN.json.
+  > Fix the artifact, then run /cr to re-verify. BLOCKED:final-verification
 
 ## 6. Status query
 

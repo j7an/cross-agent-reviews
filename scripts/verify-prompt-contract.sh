@@ -160,7 +160,7 @@ fi
 # --- v0.1.x checks (router + rounds + schemas + shared content) ---
 
 check_file_exists plugin/skills/cr/SKILL.md "Router SKILL.md"
-for stage in 1a-audit 1b-settle 2a-audit 2b-settle 3a-audit 3b-settle; do
+for stage in 1a-audit 1b-settle 2a-audit 2b-settle 3a-audit 3b-settle 3c-verify; do
   check_file_exists "plugin/skills/cr/rounds/${stage}.md" "Round file: $stage"
 done
 
@@ -171,7 +171,7 @@ done
 # guaranteed to be picked up. Positional arrays exist in Bash 3.2.
 seen_schema_ids=()
 seen_schema_files=()
-for schema in finding verification adjudication changelog-entry self-review-entry state round-audit round-settle; do
+for schema in finding verification adjudication changelog-entry self-review-entry state round-audit round-settle final-verification; do
   f="plugin/skills/cr/_shared/schema/${schema}.schema.json"
   check_file_exists "$f" "Schema: ${schema}"
   if [[ -f "$f" ]]; then
@@ -267,14 +267,14 @@ done
 # preflight copy must not imply every round requires a fresh session, and the
 # round files must carry the same audit-vs-settle contract at their entrypoint.
 check_contains plugin/skills/cr/SKILL.md \
-  'If next stage is an audit round (`1a`, `2a`, `3a`), execute the **fresh-session preflight**' \
-  "F6a: SKILL.md routes audit rounds through fresh-session preflight"
+  'If next stage is an audit round (`1a`, `2a`, `3a`) **or the verification round (`3c`)**, execute the **fresh-session preflight**' \
+  "F6a: SKILL.md routes audit and verification rounds through fresh-session preflight"
 check_contains plugin/skills/cr/SKILL.md \
   'If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight' \
   "F6a: SKILL.md skips fresh-session preflight for settle rounds"
 check_contains plugin/skills/cr/_shared/preflight.md \
-  'Fresh-session preflight applies only before audit rounds (1a, 2a, 3a).' \
-  "F6b: preflight states fresh-session preflight is audit-only"
+  'Fresh-session preflight applies before audit rounds (1a, 2a, 3a) and the' \
+  "F6b: preflight states fresh-session preflight is audit-and-verification"
 check_not_contains plugin/skills/cr/_shared/preflight.md \
   'per round' \
   "F6b: preflight does not claim fresh sessions are required per round"
@@ -288,6 +288,9 @@ for stage in 1a 2a 3a; do
     'Fresh-session preflight' \
     "F6d: ${stage} audit file mentions fresh-session preflight"
 done
+check_contains "plugin/skills/cr/rounds/3c-verify.md" \
+  'Fresh-session preflight' \
+  "F6d: 3c-verify file mentions fresh-session preflight"
 
 # --- Summary ---
 

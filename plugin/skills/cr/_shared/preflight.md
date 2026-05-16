@@ -1,8 +1,9 @@
 # Pre-flight: confirm fresh session
 
-Fresh-session preflight applies only before audit rounds (1a, 2a, 3a).
-Settle rounds (1b, 2b, 3b) do not run this preflight and may continue in
-the same session or a fresh one. Before an audit round, scan THIS
+Fresh-session preflight applies before audit rounds (1a, 2a, 3a) and the
+verification round (3c). Settle rounds (1b, 2b, 3b) do not run this
+preflight and may continue in the same session or a fresh one. Before an
+audit or verification round, scan THIS
 conversation for evidence of prior cross-review pipeline activity:
 
 **Evidence of prior skill activation in this session:**

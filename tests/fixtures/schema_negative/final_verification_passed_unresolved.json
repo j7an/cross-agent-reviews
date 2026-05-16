@@ -1,0 +1,18 @@
+{
+  "round": 3,
+  "stage": "3c",
+  "schema_version": 1,
+  "slug": "foo",
+  "artifact_type": "spec",
+  "artifact_path": "docs/specs/foo-design.md",
+  "emitted_at": "2026-05-16T12:30:00Z",
+  "attempt_number": 1,
+  "verified_content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "verifications": [
+    {"round_3a_finding_id": "R3-1-001", "status": "not_resolved", "evidence": "still missing."}
+  ],
+  "regression_findings": [],
+  "result": "passed",
+  "final_status": "CORRECTED_AND_READY",
+  "prior_attempts": []
+}

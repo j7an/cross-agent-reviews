@@ -17,6 +17,7 @@ SCHEMA_FILES = [
     "state.schema.json",
     "round-audit.schema.json",
     "round-settle.schema.json",
+    "final-verification.schema.json",
 ]
 
 
@@ -150,6 +151,38 @@ def test_state_bad_stage_fails(schema_dir, registry, fixtures_dir):
     _expect_invalid(schema_dir, registry, "state.schema.json", instance)
 
 
+def test_state_accepts_round_3c_pending(schema_dir, registry):
+    instance = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "a" * 64,
+            "current_stage": "round_3c_pending",
+            "completed_rounds": ["1a", "1b", "2a", "2b", "3a", "3b"],
+            "started_at": "2026-05-16T12:00:00Z",
+            "last_updated_at": "2026-05-16T12:00:00Z",
+        },
+    }
+    _validate(schema_dir, registry, "state.schema.json", instance)
+
+
+def test_state_accepts_3c_completed_round(schema_dir, registry):
+    instance = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "a" * 64,
+            "current_stage": "ready_for_implementation",
+            "completed_rounds": ["1a", "1b", "2a", "2b", "3a", "3b", "3c"],
+            "started_at": "2026-05-16T12:00:00Z",
+            "last_updated_at": "2026-05-16T12:00:00Z",
+        },
+    }
+    _validate(schema_dir, registry, "state.schema.json", instance)
+
+
 # --- round-audit.schema.json ---
 
 
@@ -209,3 +242,125 @@ def test_round_3b_settle_nonblocker_accepted_fails(schema_dir, registry, fixture
         (fixtures_dir / "schema_negative/round_3b_settle_nonblocker_accepted.json").read_text()
     )
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_zero_accepted_requires_ready(schema_dir, registry, fixtures_dir):
+    """3b with empty accepted_findings MUST carry final_status READY_FOR_IMPLEMENTATION."""
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    assert instance["accepted_findings"] == []
+    assert instance["final_status"] == "READY_FOR_IMPLEMENTATION"
+    _validate(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_zero_accepted_with_cpv_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    instance["final_status"] = "CORRECTED_PENDING_VERIFICATION"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_accepted_with_cpv_passes(schema_dir, registry, fixtures_dir):
+    """A 3b with accepted findings is valid ONLY with CORRECTED_PENDING_VERIFICATION."""
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/round_3b_settle_corrected.json").read_text()
+    )
+    assert instance["accepted_findings"]  # non-empty
+    assert instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    _validate(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_accepted_with_ready_fails(schema_dir, registry, fixtures_dir):
+    """Requirement-9 gate: accepted findings + READY_FOR_IMPLEMENTATION is REJECTED
+    — a paste cannot present corrected 3b work as ready without verification."""
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/round_3b_settle_corrected.json").read_text()
+    )
+    instance["final_status"] = "READY_FOR_IMPLEMENTATION"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+def test_round_3b_corrected_and_ready_value_removed(schema_dir, registry, fixtures_dir):
+    """CORRECTED_AND_READY is no longer a legal settle-round final_status."""
+    instance = json.loads((fixtures_dir / "schema_positive/round_3b_settle.json").read_text())
+    instance["final_status"] = "CORRECTED_AND_READY"
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", instance)
+
+
+# --- final-verification.schema.json ---
+
+
+def test_final_verification_passed_passes(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    _validate(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_passed_with_unresolved_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_negative/final_verification_passed_unresolved.json").read_text()
+    )
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_failed_must_omit_final_status(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["result"] = "failed"
+    instance["verifications"] = [
+        {"round_3a_finding_id": "R3-1-001", "status": "not_resolved", "evidence": "x"}
+    ]
+    # final_status still present -> invalid for a failed envelope
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_passed_with_regression_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["regression_findings"] = [
+        {
+            "id": "R3C-001",
+            "location": "§6",
+            "severity": "blocker",
+            "finding": "edit broke the cross-reference",
+            "why_it_matters": "implementer follows a dead link",
+            "suggested_direction": "repoint the reference",
+        }
+    ]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_bad_regression_id_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["result"] = "failed"
+    del instance["final_status"]
+    instance["regression_findings"] = [
+        {
+            "id": "R3-1-001",
+            "location": "§6",
+            "severity": "blocker",
+            "finding": "x",
+            "why_it_matters": "y",
+            "suggested_direction": "z",
+        }
+    ]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_missing_prior_attempts_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    del instance["prior_attempts"]
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+def test_final_verification_bad_finding_id_fails(schema_dir, registry, fixtures_dir):
+    instance = json.loads(
+        (fixtures_dir / "schema_positive/final_verification_passed.json").read_text()
+    )
+    instance["verifications"][0]["round_3a_finding_id"] = "R3-9-001"
+    _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)

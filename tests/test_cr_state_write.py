@@ -748,6 +748,152 @@ def test_3a_non_clean_advances_to_round_3b(workspace_with_state):
     assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
 
 
+def test_3b_accept_emits_corrected_pending_verification(workspace_with_state):
+    # drive 1a..3a with a 3a blocker, then 3b accepting it
+    _walk_to_3a_pending(workspace_with_state)
+    write_round(workspace_with_state, "round_3a_input_blocker.json")
+    result = write_round(workspace_with_state, "round_3b_input_accept.json")
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3b.json").read_text()
+    )
+    assert env["final_status"] == "CORRECTED_PENDING_VERIFICATION"
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3c_pending"
+    assert "3c" not in state["spec"]["completed_rounds"]
+
+
+def test_3b_zero_accepted_terminates_ready(workspace_with_state):
+    _walk_to_3a_pending(workspace_with_state)
+    write_round(workspace_with_state, "round_3a_input_blocker.json")
+    result = write_round(workspace_with_state, "round_3b_input_adjudicate.json")  # rejects all
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3b.json").read_text()
+    )
+    assert env["final_status"] == "READY_FOR_IMPLEMENTATION"
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+
+
+def _drive_to_3c_pending(workspace):
+    write_round(workspace, "round_1a_input.json")
+    write_round(workspace, "round_1b_input.json")
+    write_round(workspace, "round_2a_input.json")
+    write_round(workspace, "round_2b_input.json")
+    write_round(workspace, "round_3a_input_blocker.json")
+    write_round(workspace, "round_3b_input_accept.json")
+
+
+def test_3c_pass_terminates_via_3c(workspace_with_state):
+    _drive_to_3c_pending(workspace_with_state)
+    result = write_round(workspace_with_state, "round_3c_input_pass.json")
+    assert result.returncode == 0, result.stderr
+    env = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3c.json").read_text()
+    )
+    assert env["result"] == "passed"
+    assert env["final_status"] == "CORRECTED_AND_READY"
+    assert env["attempt_number"] == 1
+    assert env["prior_attempts"] == []
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+    assert "3c" in state["spec"]["completed_rounds"]
+    assert state["spec"]["content_hash"] == env["verified_content_hash"]
+
+
+def test_3c_fail_writes_attempt_file_and_leaves_state(workspace_with_state):
+    _drive_to_3c_pending(workspace_with_state)
+    before = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    result = write_round(workspace_with_state, "round_3c_input_fail.json")
+    assert result.returncode == 0, result.stderr
+    attempt = workspace_with_state / ".cross-agent-reviews/foo/spec/round-3c-attempt-001.json"
+    assert attempt.exists()
+    env = json.loads(attempt.read_text())
+    assert env["result"] == "failed"
+    assert "final_status" not in env
+    after = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert after == before  # failed 3c does not mutate state.json
+    assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-3c.json").exists()
+
+
+def test_3c_rerun_guard_blocks_unchanged_artifact(workspace_with_state):
+    _drive_to_3c_pending(workspace_with_state)
+    write_round(workspace_with_state, "round_3c_input_fail.json")  # attempt 1
+    result = write_round(workspace_with_state, "round_3c_input_fail.json")  # no edit
+    assert result.returncode == 1
+    assert "rerun guard" in result.stderr
+
+
+def test_3c_missing_verification_rejected(workspace_with_state):
+    _drive_to_3c_pending(workspace_with_state)
+    # an empty-verifications payload -> 1:1 invariant fails (and minItems)
+    bad = workspace_with_state / "bad_3c.json"
+    bad.write_text(json.dumps({"stage": "3c", "verifications": [], "regression_findings": []}))
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(bad),
+        ],
+        cwd=workspace_with_state,
+    )
+    assert result.returncode == 1
+    assert "missing a verification" in result.stderr
+
+
+def test_3c_attempt_numbering_is_max_based(workspace_with_state):
+    """attempt-001 pruned, attempt-002 surviving -> next failed attempt is 003,
+    not 002 (max-based, not count-based — count would collide with 002)."""
+    _drive_to_3c_pending(workspace_with_state)
+    spec_dir = workspace_with_state / ".cross-agent-reviews/foo/spec"
+    surviving = {
+        "round": 3,
+        "stage": "3c",
+        "schema_version": 1,
+        "slug": "foo",
+        "artifact_type": "spec",
+        "artifact_path": "docs/specs/foo-design.md",
+        "emitted_at": "2026-05-16T11:00:00Z",
+        "attempt_number": 2,
+        "verified_content_hash": "sha256:" + "b" * 64,
+        "verifications": [
+            {"round_3a_finding_id": "R3-1-001", "status": "not_resolved", "evidence": "x"}
+        ],
+        "regression_findings": [],
+        "result": "failed",
+        "prior_attempts": [],
+    }
+    (spec_dir / "round-3c-attempt-002.json").write_text(json.dumps(surviving))
+    result = write_round(workspace_with_state, "round_3c_input_fail.json")
+    assert result.returncode == 0, result.stderr
+    assert (spec_dir / "round-3c-attempt-003.json").exists()
+    assert (spec_dir / "round-3c-attempt-002.json").exists()  # surviving file untouched
+
+
+def test_3c_second_fail_records_prior_attempt(workspace_with_state):
+    """A second failed attempt summarizes the first in prior_attempts."""
+    _drive_to_3c_pending(workspace_with_state)
+    spec_dir = workspace_with_state / ".cross-agent-reviews/foo/spec"
+    write_round(workspace_with_state, "round_3c_input_fail.json")  # attempt-001
+    # operator recovery edit so the rerun guard does not block the rerun
+    artifact = workspace_with_state / "docs/specs/foo-design.md"
+    artifact.write_text(artifact.read_text() + "\n<!-- recovery edit -->\n")
+    result = write_round(workspace_with_state, "round_3c_input_fail.json")  # attempt-002
+    assert result.returncode == 0, result.stderr
+    env2 = json.loads((spec_dir / "round-3c-attempt-002.json").read_text())
+    assert env2["attempt_number"] == 2
+    assert len(env2["prior_attempts"]) == 1
+    assert env2["prior_attempts"][0]["attempt_number"] == 1
+    assert "R3-1-001" in env2["prior_attempts"][0]["not_resolved_finding_ids"]
+
+
 def test_rejects_state_with_both_blocks_missing_spec_anchor(workspace_with_state, tmp_path):
     """If state.json has both spec and plan blocks, plan.spec_hash_at_start
     MUST be present. Otherwise spec-drift detection silently no-ops. This

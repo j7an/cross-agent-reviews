@@ -11,17 +11,19 @@ A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross
 | 2a | `rounds/2a-audit.md` | Reviewer (verify corrections) | `round-1b.json` | `round-2a.json` |
 | 2b | `rounds/2b-settle.md` | Author (settle + edit) | `round-2a.json` | `round-2b.json` |
 | 3a | `rounds/3a-audit.md` | Reviewer (strict final check) | `round-2b.json` | `round-3a.json` |
-| 3b | `rounds/3b-settle.md` | Author (final adjudication) | `round-3a.json` | `final_status` |
+| 3b | `rounds/3b-settle.md` | Author (final adjudication) | `round-3a.json` | `final_status` (`READY_FOR_IMPLEMENTATION` or `CORRECTED_PENDING_VERIFICATION`) |
+| 3c | `rounds/3c-verify.md` | Independent verifier (conditional) | `round-3b.json` | `round-3c.json` / `round-3c-attempt-NNN.json` |
 
-Round 3b runs only when Round 3a found blockers. A **clean 3a** — every reviewer agent `ship_ready` with zero findings — terminates the pipeline directly (see **Terminal status** below).
+Round 3b runs only when Round 3a found blockers. A **clean 3a** — every reviewer agent `ship_ready` with zero findings — terminates the pipeline directly (see **Terminal status** below). Round 3c (final verification) runs only when Round 3b accepted and corrected blockers; a Round 3b that rejected every blocker terminates directly.
 
-**Fresh session per audit round.** The router applies a fresh-session preflight only before audit rounds (1a, 2a, 3a) — cross-agent diversity demands the reviewer come to the artifact without prior interpretive frame. Settle rounds (1b, 2b, 3b) may continue in the same session or a fresh one (operator choice).
+**Fresh session per audit round.** The router applies a fresh-session preflight before audit rounds (1a, 2a, 3a) and before the verification round (3c) — cross-agent diversity demands the reviewer/verifier come to the artifact without prior interpretive frame. Settle rounds (1b, 2b, 3b) may continue in the same session or a fresh one (operator choice).
 
-**Terminal status.** The pipeline reaches `READY_FOR_IMPLEMENTATION` one of two ways:
-- **Clean 3a** — every Round 3a agent is `ship_ready` with zero findings. The pipeline terminates immediately at Round 3a; Round 3b does not run.
-- **Via Round 3b** — Round 3a found blockers, so Round 3b runs final adjudication and emits one of:
-  - `READY_FOR_IMPLEMENTATION` — 3b accepted no findings; artifact ships unchanged.
-  - `CORRECTED_AND_READY` — 3b accepted findings; minimum corrections applied; artifact ships.
+**Terminal status.** The pipeline terminates one of three ways:
+- **Clean 3a** — every Round 3a agent is `ship_ready` with zero findings. Terminates at Round 3a; Rounds 3b and 3c do not run. `final_status: READY_FOR_IMPLEMENTATION`.
+- **Via Round 3b** — Round 3a found blockers, Round 3b rejected all of them. `final_status: READY_FOR_IMPLEMENTATION`; artifact ships unchanged.
+- **Via Round 3c** — Round 3b accepted and corrected blockers, then Round 3c independently verified the corrections. `final_status: CORRECTED_AND_READY`.
+
+Between Round 3b and a `CORRECTED_AND_READY` terminal the pipeline holds two non-terminal states: `final_verification_pending` (3c not yet run) and `final_verification_failed` (a 3c attempt found unresolved blockers or regressions — fix the artifact and rerun `/cr`).
 
 ## Architecture
 
@@ -36,7 +38,8 @@ plugin/skills/cr/
 │   ├── 2a-audit.md
 │   ├── 2b-settle.md
 │   ├── 3a-audit.md
-│   └── 3b-settle.md
+│   ├── 3b-settle.md
+│   └── 3c-verify.md
 └── _shared/
     ├── preflight.md
     ├── dispatch-template.md
@@ -162,9 +165,14 @@ State file does all handoff. Per the §5.4 fresh-session policy, fresh sessions 
 [fresh session]      /cr             → state says next is 2a (audit); fresh required
 [same or fresh]      /cr             → state says next is 2b; runs round 2b
 [fresh session]      /cr             → state says next is 3a (audit); fresh required
-                                       clean 3a → pipeline terminates here (round 3b skipped)
+                                       clean 3a → pipeline terminates here (3b, 3c skipped)
                                        non-clean 3a → state says next is 3b
 [same or fresh]      /cr             → (non-clean 3a only) runs round 3b
+                                       3b rejects all blockers → pipeline terminates
+                                       3b accepts blockers → state says next is 3c
+[fresh session]      /cr             → (3b accepted only) runs round 3c; fresh required
+                                       3c passes → pipeline terminates (CORRECTED_AND_READY)
+                                       3c fails  → fix artifact, run /cr to re-verify
 [fresh session]      /cr <plan-path> → state has spec finished; plan starts at round 1a (audit, fresh required)
 … [plan rounds with the same audit/settle alternation] …
 ```
@@ -194,6 +202,8 @@ On the **initiating** host, the cue must be combined with the artifact path on t
 ```
 
 The operator pastes JSON twice per round-pair (one transit per host hop). Same UX as v0.1.0 paste-into-prompt; the state file makes single-host operation file-driven without regressing cross-host.
+
+Failed `round-3c-attempt-NNN.json` files are host-local and are never paste-imported; the passing `round-3c.json` is the cross-host handoff record. The operator must carry the verified artifact bytes to the receiving host — a `3c` paste is rejected if the receiving host's local artifact does not match the pasted `verified_content_hash`.
 
 **Common mistakes:**
 
