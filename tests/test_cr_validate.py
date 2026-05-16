@@ -37,6 +37,16 @@ def test_round_1b_settle_valid(fixtures_dir):
     assert result.returncode == 0
 
 
+def test_round_1b_settle_nit_accepted_valid(fixtures_dir):
+    """Round 1b accepts a finding of any severity Round 1a can emit, including
+    `nit`. `cr_validate --kind settle` validates against the same settle
+    schema the writer uses, so this proves the relaxed policy end-to-end on
+    the validate path."""
+    payload = (fixtures_dir / "schema_positive/round_1b_settle_nit_accepted.json").read_text()
+    result = run(["--kind", "settle"], stdin=payload)
+    assert result.returncode == 0, result.stderr
+
+
 def test_round_audit_wrong_round_for_stage(fixtures_dir):
     payload = (fixtures_dir / "schema_negative/round_audit_wrong_round_for_stage.json").read_text()
     result = run(["--kind", "audit"], stdin=payload)
