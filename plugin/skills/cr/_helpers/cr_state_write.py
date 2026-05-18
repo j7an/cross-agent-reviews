@@ -54,6 +54,23 @@ def _is_clean_3a(envelope: dict) -> bool:
     return all(a["status"] == "ship_ready" for a in envelope["agents"])
 
 
+def _is_clean_1a(envelope: dict) -> bool:
+    """True when every agent in a 1a envelope is `clean` (⇒ zero findings)."""
+    return all(a["status"] == "clean" for a in envelope["agents"])
+
+
+def _is_clean_2a(envelope: dict) -> bool:
+    """True when a 2a envelope is clean: every agent `verified`, zero new
+    findings, and every round-1 verification `resolved`."""
+    if not all(a["status"] == "verified" for a in envelope["agents"]):
+        return False
+    if any(a["findings"] for a in envelope["agents"]):
+        return False
+    return all(
+        v["status"] == "resolved" for a in envelope["agents"] for v in a["round_1_verifications"]
+    )
+
+
 def _attempt_files(artifact_dir: Path) -> list[dict]:
     """Return parsed round-3c-attempt-*.json envelopes, sorted by attempt_number.
 

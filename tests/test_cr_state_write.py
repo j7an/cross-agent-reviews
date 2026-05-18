@@ -956,3 +956,42 @@ def test_2a_missing_round_1b_exits_clean(workspace_with_state):
     assert "round 2a requires round-1b.json" in result.stderr
     assert "Traceback" not in result.stderr
     assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-2a.json").exists()
+
+
+def test_is_clean_helpers_importable():
+    """The eligibility helpers exist and classify envelopes correctly."""
+    sys.path.insert(0, str(HELPERS))
+    try:
+        import cr_state_write as w
+    finally:
+        sys.path.pop(0)
+    clean_1a = {"agents": [{"status": "clean", "findings": [], "round_1_verifications": []}]}
+    dirty_1a = {
+        "agents": [{"status": "findings_found", "findings": [{}], "round_1_verifications": []}]
+    }
+    assert w._is_clean_1a(clean_1a) is True
+    assert w._is_clean_1a(dirty_1a) is False
+    clean_2a = {
+        "agents": [
+            {
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [{"status": "resolved"}],
+            }
+        ]
+    }
+    unresolved_2a = {
+        "agents": [
+            {
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [{"status": "not_resolved"}],
+            }
+        ]
+    }
+    new_finding_2a = {
+        "agents": [{"status": "issues_found", "findings": [{}], "round_1_verifications": []}]
+    }
+    assert w._is_clean_2a(clean_2a) is True
+    assert w._is_clean_2a(unresolved_2a) is False
+    assert w._is_clean_2a(new_finding_2a) is False
