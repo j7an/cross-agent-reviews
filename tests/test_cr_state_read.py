@@ -1517,3 +1517,92 @@ def test_assert_profile_conflicts_with_absent_profile(workspace):
     assert result.returncode != 0
     assert "profile-conflict" in result.stderr
     assert "legacy/unset" in result.stderr
+
+
+def test_paste_accepts_auto_settled_round_with_valid_hash(tmp_path):
+    """An auto-settled 1b paste-imports as a normal settle round, and its
+    source_round_hash stays valid against the receiving host's round-1a.json."""
+
+    def _make_host(root):
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        (root / "docs" / "specs").mkdir(parents=True)
+        shutil.copy(
+            REPO_ROOT / "tests" / "fixtures" / "artifacts" / "spec.md",
+            root / "docs" / "specs" / "foo-design.md",
+        )
+        schema_dst = root / "plugin" / "skills" / "cr" / "_shared" / "schema"
+        schema_dst.parent.mkdir(parents=True)
+        shutil.copytree(REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema", schema_dst)
+
+    clean_1a = REPO_ROOT / "tests/fixtures/state_write_inputs/round_1a_clean_input.json"
+
+    # --- Host A (fast): generate round-1a.json + auto-settled round-1b.json ---
+    host_a = tmp_path / "a"
+    host_a.mkdir()
+    _make_host(host_a)
+    run(
+        INIT,
+        [
+            "--artifact-path",
+            str(host_a / "docs/specs/foo-design.md"),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+        ],
+        cwd=host_a,
+        stdin="",
+    )
+    run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(clean_1a),
+        ],
+        cwd=host_a,
+    )
+    a_dir = host_a / ".cross-agent-reviews/foo/spec"
+    paste_1a = (a_dir / "round-1a.json").read_text()
+    paste_1b = (a_dir / "round-1b.json").read_text()
+    assert json.loads(paste_1b)["auto_settled"]["source_stage"] == "1a"
+
+    # --- Host B: init only, then paste-import Host A's 1a and 1b ---
+    host_b = tmp_path / "b"
+    host_b.mkdir()
+    _make_host(host_b)
+    run(
+        INIT,
+        [
+            "--artifact-path",
+            str(host_b / "docs/specs/foo-design.md"),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host_b,
+        stdin="",
+    )
+    # Paste the audit round first (state: round_1a_pending -> round_1b_pending).
+    r1 = run(SCRIPT, ["--slug", "foo", "--paste"], cwd=host_b, stdin=paste_1a)
+    assert r1.returncode == 0, r1.stderr
+    # Paste the auto-settled settle round.
+    r2 = run(SCRIPT, ["--slug", "foo", "--paste"], cwd=host_b, stdin=paste_1b)
+    assert r2.returncode == 0, r2.stderr
+
+    b_dir = host_b / ".cross-agent-reviews/foo/spec"
+    pasted_1b = json.loads((b_dir / "round-1b.json").read_text())
+    # auto_settled survives the paste byte-for-byte under canonical form.
+    assert pasted_1b["auto_settled"] == json.loads(paste_1b)["auto_settled"]
+    # source_round_hash is valid against the receiving host's paired 1a file.
+    assert pasted_1b["auto_settled"]["source_round_hash"] == compute_content_hash(
+        b_dir / "round-1a.json"
+    )
+    state = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_2a_pending"
