@@ -93,6 +93,25 @@ Parse the JSON output. The next stage is `state.<artifact_type>.current_stage` m
 
 If `integrity == "STATE_INTEGRITY_ERROR"`, halt with `BLOCKED:state-integrity` and surface to the operator. (Check this before any other branch — an integrity error invalidates every subsequent decision.)
 
+**Mode/profile tokens on non-mutating paths.** The `pending_import` and `ready_for_implementation` branches below are *non-mutating continuations* — they sync state or report status, and neither re-runs init, so a post-init mode/profile token cannot change the locked contract there. When `cr_state_pick_slug.py` returned a `mode` or `review_profile` token and the next step is one of those two branches, reconcile the token **non-fatally** before continuing:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
+```
+
+- **Zero exit** — the token matches the locked value; continue silently, no notice.
+- **Non-zero exit whose stderr is a `BLOCKED:mode-conflict` / `BLOCKED:profile-conflict` diagnostic** — a genuine conflict. Do NOT halt. Emit a one-line `NOTICE` naming the ignored token and the locked value, then continue with the branch (pending-import proceeds to §3; a terminal artifact proceeds to its status query). The helper diagnostic already names the locked value, and shows `legacy/unset` when the block predates the mode/profile contract — reformat it into the `NOTICE`:
+
+  ```text
+  NOTICE: mode token `fast` ignored; this spec block is locked to `thorough`, and mode/profile cannot change after init.
+  NOTICE: review_profile token `feature` ignored; this plan block is locked to `patch`, and mode/profile cannot change after init.
+  NOTICE: review_profile token `patch` ignored; this spec block is locked to `legacy/unset`, and mode/profile cannot change after init.
+  ```
+
+  If both the mode and profile tokens conflict, emit one `NOTICE` per conflicting token, then continue.
+- **Any other non-zero exit** — unexpected state/block absence or an argument error (rare after the successful `state-read` above). This is NOT a conflict: surface the helper diagnostic as an unexpected failure and halt; do not reformat it into a `NOTICE`.
+
 If `pending_import: true` in the read output, the operator switched hosts; route to §3 paste-import. **This check runs before the `ready_for_implementation` check below**: a terminal cross-host handoff can leave `state.<artifact_type>.current_stage == "ready_for_implementation"` with `completed_rounds` including `3b` while `round-3b.json` has not yet been pasted on this host (see Phase 6's `_classify`: `pending_import` flips true whenever any completed stage's round file is missing). Reading `final_status` from `round-3b.json` in that case would fail — the paste-import branch is what supplies the missing round file.
 
 If `state.<artifact_type>.current_stage == "ready_for_implementation"`, the pipeline has already terminated for this artifact. Do NOT proceed to §3 or §4. Classify the terminal shape from `state.<artifact_type>.completed_rounds`:
@@ -131,7 +150,7 @@ dispatch:
 A zero exit means the token matches the locked value (a no-op). A non-zero
 exit means a conflict — halt with `BLOCKED:mode-conflict` or
 `BLOCKED:profile-conflict` and surface the diagnostic (it names the locked
-value). Mode and profile are fixed at init and cannot be changed mid-pipeline.
+value). Mode and profile are fixed at init and cannot be changed mid-pipeline. This strict halt governs the **active dispatch path only** — when the router is proceeding to dispatch a real round. Conflicting tokens on the terminal and pending-import branches are handled by the *Mode/profile tokens on non-mutating paths* rule above, which emits a `NOTICE` and continues instead of halting.
 
 If next stage is an audit round (`1a`, `2a`, `3a`) **or the verification round (`3c`)**, execute the **fresh-session preflight** from [_shared/preflight.md](_shared/preflight.md) BEFORE doing anything else. If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight (per §5.4 of the spec).
 

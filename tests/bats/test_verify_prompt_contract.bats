@@ -87,3 +87,20 @@ setup() {
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "F6b:"
 }
+
+@test "verifier exits non-zero when SKILL.md is missing the non-mutating-path mode/profile rule" {
+  # F7: the "Mode/profile tokens on non-mutating paths" paragraph is the only
+  # thing that documents warn-and-continue behavior for conflicting mode/profile
+  # tokens on terminal and pending-import reruns (issue #26). Strip both stable
+  # anchors the verifier asserts on; the verifier must reject the result.
+  scratch=$(mktemp -d)
+  cp -R "$REPO_ROOT/." "$scratch/"
+  cd "$scratch"
+  sed -e 's#Mode/profile tokens on non-mutating paths#REMOVED-F7-HEADING#g' \
+      -e 's/non-mutating continuations/REMOVED-F7-PHRASE/g' \
+      plugin/skills/cr/SKILL.md > plugin/skills/cr/SKILL.md.new
+  mv plugin/skills/cr/SKILL.md.new plugin/skills/cr/SKILL.md
+  run bash scripts/verify-prompt-contract.sh
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "F7:"
+}

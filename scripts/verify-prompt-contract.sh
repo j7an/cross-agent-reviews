@@ -292,6 +292,16 @@ check_contains "plugin/skills/cr/rounds/3c-verify.md" \
   'Fresh-session preflight' \
   "F6d: 3c-verify file mentions fresh-session preflight"
 
+# F7: SKILL.md must document the non-mutating-path mode/profile rule (issue
+# #26). A conflicting mode/profile token on a terminal or pending-import rerun
+# must warn-and-continue, not halt with BLOCKED:* and not be silently dropped.
+# Grep stable anchors — the section heading and one durable phrase — not the
+# illustrative `fast`/`thorough` example values.
+check_contains plugin/skills/cr/SKILL.md "Mode/profile tokens on non-mutating paths" \
+  "F7: SKILL.md documents the non-mutating-path mode/profile rule"
+check_contains plugin/skills/cr/SKILL.md "non-mutating continuations" \
+  "F7: SKILL.md frames terminal/pending-import reruns as non-mutating continuations"
+
 # --- Summary ---
 
 if [[ "$failures" -gt 0 ]]; then
