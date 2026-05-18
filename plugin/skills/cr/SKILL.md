@@ -63,6 +63,14 @@ Run init with the gitignore prompt suppressed — the operator only wants the bo
 "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan> --no-gitignore-prompt
 ```
 
+When `cr_state_pick_slug.py` returned `mode` and/or `review_profile`, append
+`--mode <value>` / `--review-profile <value>` to the command above — exactly
+as §1 does. This bootstrap is a separate branch from §1, so the mode/profile
+contract is **not** forwarded automatically: omitting the flags here emits a
+bootstrap `state.json` with no locked contract, and Host B would silently run
+legacy `thorough` behavior. Init is the only place mode/profile are written,
+so a token dropped here cannot be recovered downstream.
+
 Capture the script's stdout — that IS the canonical `state.json` payload (§1 already notes this). Present it to the operator with explicit copy instructions, then halt:
 
 > Bootstrap state.json for Host B (copy below). On Host B, run `/cr` and paste this JSON when prompted; that host will validate the paste and run round 1a.
