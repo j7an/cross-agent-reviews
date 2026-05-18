@@ -364,3 +364,62 @@ def test_final_verification_bad_finding_id_fails(schema_dir, registry, fixtures_
     )
     instance["verifications"][0]["round_3a_finding_id"] = "R3-9-001"
     _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+# --- state.schema.json: mode and review_profile fields ---
+
+
+def _base_state():
+    return {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_1a_pending",
+            "completed_rounds": [],
+            "started_at": "2026-05-17T10:00:00Z",
+            "last_updated_at": "2026-05-17T10:00:00Z",
+        },
+    }
+
+
+def test_state_legacy_without_mode_profile_valid(schema_dir, registry):
+    _validate(schema_dir, registry, "state.schema.json", _base_state())
+
+
+def test_state_accepts_mode_and_review_profile(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["mode"] = "fast"
+    state["spec"]["review_profile"] = "patch"
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_bad_mode(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["mode"] = "turbo"
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_bad_review_profile(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["review_profile"] = "huge"
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_accepts_mode_and_review_profile_on_plan(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state["plan"] = {
+        "path": "docs/plans/foo-plan.md",
+        "content_hash": "sha256:" + "b" * 64,
+        "spec_hash_at_start": "sha256:" + "0" * 64,
+        "current_stage": "round_1a_pending",
+        "completed_rounds": [],
+        "started_at": "2026-05-17T10:00:00Z",
+        "last_updated_at": "2026-05-17T10:00:00Z",
+        "mode": "fast",
+        "review_profile": "patch",
+    }
+    _validate(schema_dir, registry, "state.schema.json", state)
