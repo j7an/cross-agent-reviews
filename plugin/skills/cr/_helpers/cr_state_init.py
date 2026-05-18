@@ -20,6 +20,7 @@ from _cr_lib import (
     canonical_json,
     compute_content_hash,
     derive_slug,
+    err,
     find_repo_root,
     now_iso8601_utc,
     state_dir,
@@ -46,11 +47,7 @@ def _require_spec_terminal_for_plan(state: dict) -> int | None:
     """
     spec_block = state.get("spec")
     if spec_block is not None and spec_block.get("current_stage") != "ready_for_implementation":
-        print(
-            "ERROR: spec review must be terminal before a plan review can begin (§11.3).",
-            file=sys.stderr,
-        )
-        return 1
+        return err("spec review must be terminal before a plan review can begin (§11.3).")
     return None
 
 
@@ -127,8 +124,7 @@ def main() -> int:
     if not artifact.is_absolute():
         artifact = (Path.cwd() / artifact).resolve()
     if not artifact.is_file():
-        print(f"ERROR: artifact path not found: {artifact}", file=sys.stderr)
-        return 2
+        return err(f"artifact path not found: {artifact}", code=2)
 
     repo_root = find_repo_root(artifact.parent)
 
@@ -138,8 +134,7 @@ def main() -> int:
     try:
         slug = derive_slug(artifact)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        return err(str(e))
     # Hash against the resolved absolute path so the read works regardless
     # of which directory the operator invoked the script from. The relative
     # path is what we persist (so state.json is portable across hosts), but
@@ -166,9 +161,9 @@ def main() -> int:
 
     if existing is None:
         if block_key == "plan":
-            err = _require_spec_terminal_for_plan(state)
-            if err is not None:
-                return err
+            rc = _require_spec_terminal_for_plan(state)
+            if rc is not None:
+                return rc
             spec_block = state.get("spec")
             spec_hash = spec_block["content_hash"] if spec_block is not None else None
             if spec_hash is None:
@@ -198,13 +193,11 @@ def main() -> int:
             # is not supported in v0.1.x. The operator must either start a new
             # slug for the spec or manually archive the plan block first.
             if state.get("plan") is not None:
-                print(
-                    "ERROR: cannot initialise a spec block on a slug that already has a plan block "
+                return err(
+                    "cannot initialise a spec block on a slug that already has a plan block "
                     "(§11.3 mandates spec-first ordering). Use a new slug for the spec, or archive "
-                    "the existing plan block manually before re-running spec init.",
-                    file=sys.stderr,
+                    "the existing plan block manually before re-running spec init."
                 )
-                return 1
             state[block_key] = _new_artifact_block(
                 rel_artifact,
                 content_hash=content_hash,
@@ -221,9 +214,9 @@ def main() -> int:
                 # a previous run of this script) must not allow a fresh plan
                 # block to start. Check BEFORE prompting for confirmation so we
                 # don't ask the operator a question that's moot after refusal.
-                err = _require_spec_terminal_for_plan(state)
-                if err is not None:
-                    return err
+                rc = _require_spec_terminal_for_plan(state)
+                if rc is not None:
+                    return rc
             if not _confirm(
                 f"State block for `{block_key}` is terminal. Archive and start fresh? [y/N] "
             ):
@@ -239,11 +232,7 @@ def main() -> int:
                 review_profile=args.review_profile,
             )
         else:
-            print(
-                f"ERROR: state block for `{block_key}` is in-flight ({existing['current_stage']}).",
-                file=sys.stderr,
-            )
-            return 1
+            return err(f"state block for `{block_key}` is in-flight ({existing['current_stage']}).")
 
     if not args.no_gitignore_prompt:
         _gitignore_check(repo_root, prompt=True)
