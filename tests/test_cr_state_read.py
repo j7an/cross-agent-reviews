@@ -1606,3 +1606,94 @@ def test_paste_accepts_auto_settled_round_with_valid_hash(tmp_path):
     )
     state = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
     assert state["spec"]["current_stage"] == "round_2a_pending"
+
+
+def test_paste_rejects_auto_settled_round_with_mismatched_hash(tmp_path):
+    """An auto-settled 1b whose source_round_hash disagrees with the receiving
+    host's local round-1a.json must be rejected — accepting it would persist
+    false cross-host audit evidence."""
+
+    def _make_host(root):
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        (root / "docs" / "specs").mkdir(parents=True)
+        shutil.copy(
+            REPO_ROOT / "tests" / "fixtures" / "artifacts" / "spec.md",
+            root / "docs" / "specs" / "foo-design.md",
+        )
+        schema_dst = root / "plugin" / "skills" / "cr" / "_shared" / "schema"
+        schema_dst.parent.mkdir(parents=True)
+        shutil.copytree(REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema", schema_dst)
+
+    clean_1a = REPO_ROOT / "tests/fixtures/state_write_inputs/round_1a_clean_input.json"
+
+    # --- Host A (fast): generate round-1a.json + auto-settled round-1b.json ---
+    host_a = tmp_path / "a"
+    host_a.mkdir()
+    _make_host(host_a)
+    run(
+        INIT,
+        [
+            "--artifact-path",
+            str(host_a / "docs/specs/foo-design.md"),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+        ],
+        cwd=host_a,
+        stdin="",
+    )
+    run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(clean_1a),
+        ],
+        cwd=host_a,
+    )
+    a_dir = host_a / ".cross-agent-reviews/foo/spec"
+    paste_1a = (a_dir / "round-1a.json").read_text()
+    paste_1b = (a_dir / "round-1b.json").read_text()
+
+    # --- Host B: init only, then paste-import Host A's 1a ---
+    host_b = tmp_path / "b"
+    host_b.mkdir()
+    _make_host(host_b)
+    run(
+        INIT,
+        [
+            "--artifact-path",
+            str(host_b / "docs/specs/foo-design.md"),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host_b,
+        stdin="",
+    )
+    r1 = run(SCRIPT, ["--slug", "foo", "--paste"], cwd=host_b, stdin=paste_1a)
+    assert r1.returncode == 0, r1.stderr
+
+    # Tamper the auto-settled source_round_hash to a different valid-format
+    # hash. The value still matches ^sha256:[0-9a-f]{64}$, so the round stays
+    # schema-valid — rejection must come from the parity check, not the schema.
+    tampered = json.loads(paste_1b)
+    tampered["auto_settled"]["source_round_hash"] = "sha256:" + "f" * 64
+    tampered_1b = json.dumps(tampered, indent=2, sort_keys=True) + "\n"
+
+    r2 = run(SCRIPT, ["--slug", "foo", "--paste"], cwd=host_b, stdin=tampered_1b)
+    assert r2.returncode != 0, r2.stdout
+    assert "source_round_hash" in r2.stderr or "auto-settled" in r2.stderr, r2.stderr
+
+    # Host B did not advance: round-1b.json absent, state still 1b-pending.
+    b_dir = host_b / ".cross-agent-reviews/foo/spec"
+    assert not (b_dir / "round-1b.json").exists()
+    state = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_1b_pending"

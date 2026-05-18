@@ -762,6 +762,28 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "disagrees with the pasted round-3c.json verified_content_hash "
                 "(bootstrapped state is inconsistent)"
             )
+    # Auto-settled source-round parity: an auto-settled 1b/2b pins the sha256
+    # content hash of the audit round it no-op-settled. The receiving host
+    # must hold that exact audit round file, else importing the settle would
+    # persist false cross-host audit evidence (a settle claiming it derived
+    # from an audit round this host never saw, or saw differently).
+    auto = instance.get("auto_settled")
+    if auto is not None:
+        source_round_path = artifact_dir / f"round-{auto['source_stage']}.json"
+        if not source_round_path.exists():
+            return _err(
+                f"auto-settled paste: the source audit round "
+                f"round-{auto['source_stage']}.json is not present on this host "
+                "— paste the audit round before its auto-settled settle round"
+            )
+        local_source_hash = compute_content_hash(source_round_path)
+        if local_source_hash != auto["source_round_hash"]:
+            return _err(
+                "auto-settled paste: auto_settled.source_round_hash does not "
+                f"match the local round-{auto['source_stage']}.json bytes — the "
+                "pasted settle round pins a different audit round than this "
+                "host holds"
+            )
     body = canonical_json(instance)
     atomic_write(artifact_dir / f"round-{instance['stage']}.json", body)
     if pending is None:
