@@ -32,6 +32,11 @@ def _humanize_age(then_iso: str, now: datetime) -> str:
 
 def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> list[str]:
     lines = [f"  {art.capitalize():<5} ({block['path']})"]
+    mode = block.get("mode")
+    mode_label = mode if mode is not None else "thorough (default)"
+    profile = block.get("review_profile")
+    profile_label = profile if profile is not None else "(legacy — unset)"
+    lines.append(f"    Mode: {mode_label}   Profile: {profile_label}")
     completed = set(block["completed_rounds"])
     current = block["current_stage"]
     shape = terminal_shape(block["completed_rounds"])
@@ -53,10 +58,19 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         elif stage in completed:
             rp = artifact_dir / f"round-{stage}.json"
             if rp.exists():
-                emitted = json.loads(rp.read_text())["emitted_at"]
-                lines.append(
-                    f"    {stage:<3}  completed  {emitted}   ({_humanize_age(emitted, now)})"
-                )
+                round_data = json.loads(rp.read_text())
+                emitted = round_data["emitted_at"]
+                auto = round_data.get("auto_settled")
+                if auto is not None:
+                    src = auto["source_stage"]
+                    lines.append(
+                        f"    {stage:<3}  completed (auto-settled from clean "
+                        f"{src})  {emitted}   ({_humanize_age(emitted, now)})"
+                    )
+                else:
+                    lines.append(
+                        f"    {stage:<3}  completed  {emitted}   ({_humanize_age(emitted, now)})"
+                    )
             else:
                 lines.append(f"    {stage:<3}  completed  (round file missing — pending import)")
         elif stage == "3c" and current == "round_3c_pending":

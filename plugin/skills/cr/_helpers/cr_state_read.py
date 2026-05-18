@@ -762,6 +762,28 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                 "disagrees with the pasted round-3c.json verified_content_hash "
                 "(bootstrapped state is inconsistent)"
             )
+    # Auto-settled source-round parity: an auto-settled 1b/2b pins the sha256
+    # content hash of the audit round it no-op-settled. The receiving host
+    # must hold that exact audit round file, else importing the settle would
+    # persist false cross-host audit evidence (a settle claiming it derived
+    # from an audit round this host never saw, or saw differently).
+    auto = instance.get("auto_settled")
+    if auto is not None:
+        source_round_path = artifact_dir / f"round-{auto['source_stage']}.json"
+        if not source_round_path.exists():
+            return _err(
+                f"auto-settled paste: the source audit round "
+                f"round-{auto['source_stage']}.json is not present on this host "
+                "— paste the audit round before its auto-settled settle round"
+            )
+        local_source_hash = compute_content_hash(source_round_path)
+        if local_source_hash != auto["source_round_hash"]:
+            return _err(
+                "auto-settled paste: auto_settled.source_round_hash does not "
+                f"match the local round-{auto['source_stage']}.json bytes — the "
+                "pasted settle round pins a different audit round than this "
+                "host holds"
+            )
     body = canonical_json(instance)
     atomic_write(artifact_dir / f"round-{instance['stage']}.json", body)
     if pending is None:
@@ -807,6 +829,42 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     return 0
 
 
+def _cmd_assert(
+    repo_root: Path,
+    slug: str,
+    artifact_type: str,
+    assert_mode: str | None,
+    assert_profile: str | None,
+) -> int:
+    """Reconcile an operator-supplied mode/profile token against the locked
+    value in state.json. Absent stored `mode` is effective `thorough`; absent
+    stored `review_profile` is legacy/unset and matches no declared profile."""
+    state_path = state_dir(repo_root) / slug / "state.json"
+    if not state_path.exists():
+        return _err(f"no state for slug {slug!r}")
+    state = json.loads(state_path.read_text())
+    block = state.get(artifact_type)
+    if block is None:
+        return _err(f"state.json has no {artifact_type!r} block")
+    if assert_mode is not None:
+        locked = block.get("mode", "thorough")
+        if assert_mode != locked:
+            return _err(
+                f"BLOCKED:mode-conflict — requested mode {assert_mode!r} but the "
+                f"{artifact_type} block is locked to {locked!r}; mode is fixed at init."
+            )
+    if assert_profile is not None:
+        locked = block.get("review_profile")
+        if assert_profile != locked:
+            shown = locked if locked is not None else "legacy/unset"
+            return _err(
+                f"BLOCKED:profile-conflict — requested review_profile "
+                f"{assert_profile!r} but the {artifact_type} block is locked to "
+                f"{shown!r}; review_profile is fixed at init."
+            )
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--slug", required=True)
@@ -818,6 +876,8 @@ def main() -> int:
         help="Apply the §7.8 drift-recovery the operator chose.",
     )
     p.add_argument("--paste", action="store_true")
+    p.add_argument("--assert-mode", choices=["thorough", "fast"])
+    p.add_argument("--assert-profile", choices=["patch", "feature", "greenfield"])
     args = p.parse_args()
 
     try:
@@ -833,6 +893,12 @@ def main() -> int:
         return _cmd_resolve_drift(repo_root, args.slug, args.resolve_drift)
     if args.check_spec_drift:
         return _cmd_check_spec_drift(repo_root, args.slug)
+    if args.assert_mode is not None or args.assert_profile is not None:
+        if args.artifact_type is None:
+            return _err("--artifact-type required for assert mode")
+        return _cmd_assert(
+            repo_root, args.slug, args.artifact_type, args.assert_mode, args.assert_profile
+        )
     if args.artifact_type is None:
         return _err("--artifact-type required for read mode")
     return _cmd_read(repo_root, args.slug, args.artifact_type)

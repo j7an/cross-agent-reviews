@@ -9,9 +9,19 @@ import re
 import sys
 from pathlib import Path
 
-from _cr_lib import canonical_json, derive_slug, find_repo_root, state_dir, validate_slug
+from _cr_lib import (
+    _SLUG_RE,
+    canonical_json,
+    derive_slug,
+    find_repo_root,
+    state_dir,
+    validate_slug,
+)
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b")
+
+MODE_TOKENS = {"thorough", "fast"}
+PROFILE_TOKENS = {"patch", "feature", "greenfield"}
 
 
 def _looks_like_path(s: str) -> bool:
@@ -85,6 +95,78 @@ def _enumerate(state_root: Path) -> list[dict]:
     return out
 
 
+def _parse_input_tokens(raw: str) -> dict:
+    """Split a multi-token --input string into a path/slug plus optional
+    mode/profile tokens. Reserved words are recognised only as whole,
+    standalone, whitespace-delimited tokens — never as filename substrings.
+
+    Returns a dict with keys "target" (str), "mode" (str or None), and
+    "review_profile" (str or None). Raises ValueError with an operator-facing
+    diagnostic on a duplicate mode token, duplicate profile token, two
+    path-like tokens, an unrecognised extra token, or a reserved token with
+    no path/slug.
+    """
+    target: str | None = None
+    mode: str | None = None
+    profile: str | None = None
+    tokens = raw.split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        # Alias forms: --mode VALUE / --mode=VALUE, --review-profile VALUE / =VALUE
+        matched_flag = False
+        for flag, kind in (("--mode", "mode"), ("--review-profile", "profile")):
+            value: str | None = None
+            if tok == flag:
+                if i + 1 >= len(tokens):
+                    raise ValueError(f"{flag} requires a value")
+                value = tokens[i + 1]
+                i += 1
+            elif tok.startswith(f"{flag}="):
+                value = tok.split("=", 1)[1]
+                if value == "":
+                    raise ValueError(f"{flag}= requires a non-empty value")
+            if value is not None:
+                if kind == "mode":
+                    if value not in MODE_TOKENS:
+                        raise ValueError(f"invalid mode {value!r}")
+                    if mode is not None:
+                        raise ValueError("duplicate mode token")
+                    mode = value
+                else:
+                    if value not in PROFILE_TOKENS:
+                        raise ValueError(f"invalid review_profile {value!r}")
+                    if profile is not None:
+                        raise ValueError("duplicate profile token")
+                    profile = value
+                matched_flag = True
+                break
+        if not matched_flag:
+            # Bare token: reserved word, or the lone path/slug.
+            if tok in MODE_TOKENS:
+                if mode is not None:
+                    raise ValueError("duplicate mode token")
+                mode = tok
+            elif tok in PROFILE_TOKENS:
+                if profile is not None:
+                    raise ValueError("duplicate profile token")
+                profile = tok
+            elif _looks_like_path(tok) or _SLUG_RE.fullmatch(tok):
+                if target is not None:
+                    raise ValueError("two path/slug tokens supplied; expected one")
+                target = tok
+            else:
+                raise ValueError(f"unrecognised token {tok!r}")
+        i += 1
+    if target is None:
+        raise ValueError(
+            "mode/profile tokens require an artifact path or slug"
+            " (if your artifact is named after a reserved word like 'fast',"
+            " pass it as a path, e.g. './fast')"
+        )
+    return {"target": target, "mode": mode, "review_profile": profile}
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--input", help="Operator input (path or slug name).")
@@ -95,8 +177,19 @@ def main() -> int:
     slugs = _enumerate(state_root)
 
     if args.input:
-        if _looks_like_path(args.input):
-            path = Path(args.input)
+        try:
+            parsed = _parse_input_tokens(args.input)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
+        target = parsed["target"]
+        extra = {}
+        if parsed["mode"] is not None:
+            extra["mode"] = parsed["mode"]
+        if parsed["review_profile"] is not None:
+            extra["review_profile"] = parsed["review_profile"]
+        if _looks_like_path(target):
+            path = Path(target)
             try:
                 slug = derive_slug(path)
             except ValueError as e:
@@ -106,24 +199,28 @@ def main() -> int:
             artifact_type = _derive_artifact_type(path)
             if artifact_type is not None:
                 payload["artifact_type"] = artifact_type
+            payload.update(extra)
             print(canonical_json(payload))
             return 0
-        match = next((s for s in slugs if s["slug"] == args.input), None)
+        match = next((s for s in slugs if s["slug"] == target), None)
         if match is not None:
             payload = {"slug": match["slug"]}
             if match["artifact_type"] is not None:
                 payload["artifact_type"] = match["artifact_type"]
+            payload.update(extra)
             print(canonical_json(payload))
             return 0
         # Treat as a new slug name. Validate against the same regex
         # `derive_slug` enforces — a bare slug-name input is just as
         # path-unsafe as a malicious filename if accepted unchecked.
         try:
-            validate_slug(args.input)
+            validate_slug(target)
         except ValueError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 1
-        print(canonical_json({"slug": args.input}))
+        payload = {"slug": target}
+        payload.update(extra)
+        print(canonical_json(payload))
         return 0
 
     active = [s for s in slugs if s["active"]]

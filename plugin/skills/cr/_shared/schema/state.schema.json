@@ -46,7 +46,9 @@
           "uniqueItems": true
         },
         "started_at": {"$ref": "#/$defs/iso8601_utc"},
-        "last_updated_at": {"$ref": "#/$defs/iso8601_utc"}
+        "last_updated_at": {"$ref": "#/$defs/iso8601_utc"},
+        "mode": {"type": "string", "enum": ["thorough", "fast"]},
+        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]}
       }
     },
     "plan_artifact_block": {
@@ -64,7 +66,9 @@
           "uniqueItems": true
         },
         "started_at": {"$ref": "#/$defs/iso8601_utc"},
-        "last_updated_at": {"$ref": "#/$defs/iso8601_utc"}
+        "last_updated_at": {"$ref": "#/$defs/iso8601_utc"},
+        "mode": {"type": "string", "enum": ["thorough", "fast"]},
+        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]}
       }
     }
   }

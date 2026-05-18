@@ -11,6 +11,17 @@ Operator's input is one of:
 
 - **No input** — advance the active pipeline. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug` to pick the slug.
 - **Artifact path** (e.g., `docs/specs/foo-design.md`) — start a new review or augment an existing slug. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug --input <path>`.
+- **Mode/profile tokens** — when the operator's input includes the reserved
+  standalone tokens `fast`/`thorough` or `patch`/`feature`/`greenfield`
+  alongside an artifact path or slug (e.g. `/cr docs/specs/foo-design.md fast
+  patch`), pass the operator's *entire* input string to
+  `cr_state_pick_slug.py --input`. The picker extracts them deterministically
+  and returns optional `mode` / `review_profile` fields. Reserved tokens with
+  no path/slug are rejected by the picker. `--mode`/`--review-profile` (and
+  `=` forms) are accepted aliases. A bare reserved word is always the
+  mode/profile token, never a lone artifact name — an operator whose artifact
+  is genuinely named `fast` (etc.) must pass an unambiguous path form such as
+  `./fast`, which routes as a path.
 - **Outbound cross-host cue + artifact path** (an artifact path combined with "review on a different host", "this is for host B" / "for the other host", "init only" / "bootstrap only" / "export bootstrap", or "I'll continue on another host") — Host A side of the paste handshake. Initialize state locally and stop after emitting the bootstrap payload for the operator to carry to Host B. See §1.5 below; do NOT proceed to §2 or §4.
 - **Slug name** — explicit slug. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug --input <slug>`.
 - **Inbound cross-host paste cue** (a cross-host cue with NO artifact path, OR "I just ran round Na on host A", "import this round", "here is the paste") — Host B side: enter paste-import mode. See §3 below. (The disambiguator vs. the outbound branch is the presence of an artifact path: with a path the operator is starting a review and exporting it; without a path the operator is receiving someone else's paste.)
@@ -31,6 +42,11 @@ Run `cr_state_init.py` when **either** of these holds:
 "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan>
 ```
 
+When `cr_state_pick_slug.py` returned `mode` and/or `review_profile`, pass
+them to `cr_state_init.py` as `--mode <value>` / `--review-profile <value>`.
+They are recorded into the new artifact block and locked — init is the only
+place they are written.
+
 `cr_state_init.py` already handles both cases (a fresh state file and adding a missing block to an existing one — see Phase 4). It writes/updates `state.json`, derives the slug, hashes the artifact, prompts to add `.cross-agent-reviews/` to `.gitignore` (operator confirms `[y/N]`), and (for plan-only init) prints the warning per §11.3 of the spec.
 
 `<ARTIFACT_TYPE>` is the `artifact_type` returned by `cr_state_pick_slug.py`. The picker derives it from the path's `docs/specs/` vs. `docs/plans/` directory (falling back to suffix `-design`/`-spec`/`-plan` per §5.5) when the input is an artifact path; for slug-name input and no-input single-active advance, it derives type from the latest block in `state.json` (most-recent `last_updated_at`, with ties going to `spec`). When the operator gave only a slug name and the relevant block is missing, the picker omits `artifact_type` and the router asks the operator for the artifact path before invoking the script.
@@ -46,6 +62,14 @@ Run init with the gitignore prompt suppressed — the operator only wants the bo
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan> --no-gitignore-prompt
 ```
+
+When `cr_state_pick_slug.py` returned `mode` and/or `review_profile`, append
+`--mode <value>` / `--review-profile <value>` to the command above — exactly
+as §1 does. This bootstrap is a separate branch from §1, so the mode/profile
+contract is **not** forwarded automatically: omitting the flags here emits a
+bootstrap `state.json` with no locked contract, and Host B would silently run
+legacy `thorough` behavior. Init is the only place mode/profile are written,
+so a token dropped here cannot be recovered downstream.
 
 Capture the script's stdout — that IS the canonical `state.json` payload (§1 already notes this). Present it to the operator with explicit copy instructions, then halt:
 
@@ -94,6 +118,21 @@ Exit code 2 with `SPEC_DRIFT_DETECTED` on stderr means the spec file changed on 
 | `accept-drift` (assert the plan still matches the new spec) | `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --resolve-drift accept`. The script atomically refreshes `state.plan.spec_hash_at_start` to the current hash. Re-enter §2 with the new state. |
 | `abort` (resolve out of band) | Halt with `BLOCKED:spec-drift` and surface the diagnostic. The operator decides what to do; rerunning `/cr` after manual edits resumes the pipeline. |
 
+**Mode/profile conflict check.** When `cr_state_pick_slug.py` returned a
+`mode` or `review_profile` token **and** the artifact block already exists
+(init was skipped), reconcile the token against the locked value before
+dispatch:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
+"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
+```
+
+A zero exit means the token matches the locked value (a no-op). A non-zero
+exit means a conflict — halt with `BLOCKED:mode-conflict` or
+`BLOCKED:profile-conflict` and surface the diagnostic (it names the locked
+value). Mode and profile are fixed at init and cannot be changed mid-pipeline.
+
 If next stage is an audit round (`1a`, `2a`, `3a`) **or the verification round (`3c`)**, execute the **fresh-session preflight** from [_shared/preflight.md](_shared/preflight.md) BEFORE doing anything else. If next stage is a settle round (`1b`, `2b`, `3b`), skip the preflight (per §5.4 of the spec).
 
 ## 3. Cross-host paste-import branch
@@ -121,7 +160,13 @@ Map the derived stage token to its round file by suffix — audit rounds (`1a`, 
 
 The script validates schema + cross-round invariants, atomically writes
 `round-<stage>.json` + updates `state.json`, and emits byte-identical JSON
-to stdout. If validation fails, the script exits 1 with a specific
+to stdout.
+
+> Exception: after a `1a` or `2a` write in `fast` mode, a clean audit triggers
+> auto-settle (§5). In that case stdout is a `{"written_rounds": [<audit>,
+> <settle>]}` wrapper instead of a single envelope; the round files handle it.
+
+If validation fails, the script exits 1 with a specific
 diagnostic; you may auto-retry **once** with the LLM error context, then
 halt with `BLOCKED:validation` for operator intervention (§6.5 of spec).
 
@@ -134,6 +179,19 @@ operator (per §9.2 of the spec):
   > Round Na complete (M findings). Run /cr to continue with round Nb.
   > A fresh session is not required for settle rounds; you may continue
   > in this session or open a new one.
+- After a **clean `1a`/`2a` in fast mode** — `cr_state_write.py` returned a
+  `{"written_rounds": [...]}` wrapper, meaning the audit was clean and the
+  paired settle was auto-generated:
+  > Round Na complete — clean audit, 0 findings. Round Nb was auto-generated
+  > as a no-op settle (fast mode). Open a fresh session and run /cr to
+  > continue with round (N+1)a (a fresh session is required before audit
+  > rounds). For a cross-host review, paste both round files shown above on
+  > the destination host, in order.
+- After an **auto-settle failure** — `cr_state_write.py` printed an
+  `AUTO_SETTLE_FAILED:` marker on stderr:
+  > Round Na complete (0 findings). Auto-settle of round Nb failed (<reason
+  > from the marker>); the pipeline is at the manual-settle boundary. Run /cr
+  > to complete round Nb manually.
 - After a **clean 3a** (every agent `ship_ready`, zero findings) — the pipeline terminates without round 3b:
   > Round 3a complete — final reviewer audit found zero blockers. Pipeline
   > complete. final_status: READY_FOR_IMPLEMENTATION (clean 3a — round 3b

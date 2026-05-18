@@ -364,3 +364,134 @@ def test_final_verification_bad_finding_id_fails(schema_dir, registry, fixtures_
     )
     instance["verifications"][0]["round_3a_finding_id"] = "R3-9-001"
     _expect_invalid(schema_dir, registry, "final-verification.schema.json", instance)
+
+
+# --- state.schema.json: mode and review_profile fields ---
+
+
+def _base_state():
+    return {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_1a_pending",
+            "completed_rounds": [],
+            "started_at": "2026-05-17T10:00:00Z",
+            "last_updated_at": "2026-05-17T10:00:00Z",
+        },
+    }
+
+
+def test_state_legacy_without_mode_profile_valid(schema_dir, registry):
+    _validate(schema_dir, registry, "state.schema.json", _base_state())
+
+
+def test_state_accepts_mode_and_review_profile(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["mode"] = "fast"
+    state["spec"]["review_profile"] = "patch"
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_bad_mode(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["mode"] = "turbo"
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_bad_review_profile(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["review_profile"] = "huge"
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_accepts_mode_and_review_profile_on_plan(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    state["plan"] = {
+        "path": "docs/plans/foo-plan.md",
+        "content_hash": "sha256:" + "b" * 64,
+        "spec_hash_at_start": "sha256:" + "0" * 64,
+        "current_stage": "round_1a_pending",
+        "completed_rounds": [],
+        "started_at": "2026-05-17T10:00:00Z",
+        "last_updated_at": "2026-05-17T10:00:00Z",
+        "mode": "fast",
+        "review_profile": "patch",
+    }
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
+# --- round-settle.schema.json: auto_settled field ---
+
+
+def _base_settle(stage="1b"):
+    return {
+        "round": int(stage[0]),
+        "stage": stage,
+        "schema_version": 1,
+        "slug": "foo",
+        "artifact_type": "spec",
+        "artifact_path": "docs/specs/foo-design.md",
+        "emitted_at": "2026-05-17T10:00:00Z",
+        "slice_plan": [{"agent_id": 1, "concern": "c", "slice_definition": "s", "is_fixed": False}],
+        "adjudication_summary": {"accepted": 0, "rejected": 0},
+        "adjudications": [],
+        "accepted_findings": [],
+        "rejected_findings": [],
+        "changelog": [],
+        "self_review": [],
+    }
+
+
+def _auto_settled(source_stage="1a"):
+    return {
+        "trigger": "clean_audit_zero_findings",
+        "source_stage": source_stage,
+        "source_round_hash": "sha256:" + "a" * 64,
+        "reason": "Clean audit; no-op settle auto-generated.",
+    }
+
+
+def test_settle_manual_valid_without_auto_settled(schema_dir, registry):
+    _validate(schema_dir, registry, "round-settle.schema.json", _base_settle("1b"))
+
+
+def test_settle_1b_accepts_auto_settled(schema_dir, registry):
+    env = _base_settle("1b")
+    env["auto_settled"] = _auto_settled("1a")
+    _validate(schema_dir, registry, "round-settle.schema.json", env)
+
+
+def test_settle_2b_accepts_auto_settled(schema_dir, registry):
+    env = _base_settle("2b")
+    env["auto_settled"] = _auto_settled("2a")
+    _validate(schema_dir, registry, "round-settle.schema.json", env)
+
+
+def test_settle_1b_rejects_mismatched_source_stage(schema_dir, registry):
+    env = _base_settle("1b")
+    env["auto_settled"] = _auto_settled("2a")  # 1b must have source_stage 1a
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", env)
+
+
+def test_settle_2b_rejects_mismatched_source_stage(schema_dir, registry):
+    env = _base_settle("2b")
+    env["auto_settled"] = _auto_settled("1a")  # 2b must have source_stage 2a
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", env)
+
+
+def test_settle_3b_forbids_auto_settled(schema_dir, registry):
+    env = _base_settle("3b")
+    env["final_status"] = "READY_FOR_IMPLEMENTATION"
+    env["auto_settled"] = _auto_settled("2a")
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", env)
+
+
+def test_settle_auto_settled_requires_all_fields(schema_dir, registry):
+    env = _base_settle("1b")
+    env["auto_settled"] = {"trigger": "clean_audit_zero_findings", "source_stage": "1a"}
+    _expect_invalid(schema_dir, registry, "round-settle.schema.json", env)

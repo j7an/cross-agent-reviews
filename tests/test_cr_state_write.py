@@ -49,6 +49,37 @@ def workspace_with_state(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def workspace_fast(tmp_path):
+    """Like workspace_with_state but the spec block is inited with mode=fast."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "tests" / "fixtures" / "artifacts" / "spec.md",
+        tmp_path / "docs" / "specs" / "foo-design.md",
+    )
+    schema_src = REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema"
+    schema_dst = tmp_path / "plugin" / "skills" / "cr" / "_shared" / "schema"
+    schema_dst.parent.mkdir(parents=True)
+    shutil.copytree(schema_src, schema_dst)
+    artifact = tmp_path / "docs" / "specs" / "foo-design.md"
+    run(
+        INIT_SCRIPT,
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+        ],
+        cwd=tmp_path,
+        stdin="",
+    )
+    return tmp_path
+
+
 def write_round(workspace, input_fixture):
     src = REPO_ROOT / "tests" / "fixtures" / "state_write_inputs" / input_fixture
     return run(
@@ -956,3 +987,151 @@ def test_2a_missing_round_1b_exits_clean(workspace_with_state):
     assert "round 2a requires round-1b.json" in result.stderr
     assert "Traceback" not in result.stderr
     assert not (workspace_with_state / ".cross-agent-reviews/foo/spec/round-2a.json").exists()
+
+
+def test_is_clean_helpers_importable():
+    """The eligibility helpers exist and classify envelopes correctly."""
+    sys.path.insert(0, str(HELPERS))
+    try:
+        import cr_state_write as w
+    finally:
+        sys.path.pop(0)
+    clean_1a = {"agents": [{"status": "clean", "findings": [], "round_1_verifications": []}]}
+    dirty_1a = {
+        "agents": [{"status": "findings_found", "findings": [{}], "round_1_verifications": []}]
+    }
+    assert w._is_clean_1a(clean_1a) is True
+    assert w._is_clean_1a(dirty_1a) is False
+    clean_2a = {
+        "agents": [
+            {
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [{"status": "resolved"}],
+            }
+        ]
+    }
+    unresolved_2a = {
+        "agents": [
+            {
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [{"status": "not_resolved"}],
+            }
+        ]
+    }
+    new_finding_2a = {
+        "agents": [{"status": "issues_found", "findings": [{}], "round_1_verifications": []}]
+    }
+    assert w._is_clean_2a(clean_2a) is True
+    assert w._is_clean_2a(unresolved_2a) is False
+    assert w._is_clean_2a(new_finding_2a) is False
+
+
+def test_fast_clean_1a_auto_settles_to_1b(workspace_fast):
+    result = write_round(workspace_fast, "round_1a_clean_input.json")
+    assert result.returncode == 0, result.stderr
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    assert (base / "round-1a.json").exists()
+    assert (base / "round-1b.json").exists()
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_2a_pending"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b"]
+
+
+def test_fast_clean_1a_auto_settled_evidence(workspace_fast):
+    from _cr_lib import compute_content_hash
+
+    write_round(workspace_fast, "round_1a_clean_input.json")
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    settle = json.loads((base / "round-1b.json").read_text())
+    assert settle["stage"] == "1b"
+    assert settle["adjudication_summary"] == {"accepted": 0, "rejected": 0}
+    assert settle["accepted_findings"] == []
+    ev = settle["auto_settled"]
+    assert ev["trigger"] == "clean_audit_zero_findings"
+    assert ev["source_stage"] == "1a"
+    assert ev["reason"]
+    assert ev["source_round_hash"] == compute_content_hash(base / "round-1a.json")
+
+
+def test_fast_clean_1a_stdout_is_written_rounds_wrapper(workspace_fast):
+    from _cr_lib import canonical_json
+
+    result = write_round(workspace_fast, "round_1a_clean_input.json")
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"written_rounds"}
+    assert [r["stage"] for r in payload["written_rounds"]] == ["1a", "1b"]
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    assert canonical_json(payload["written_rounds"][0]) == (base / "round-1a.json").read_text()
+    assert canonical_json(payload["written_rounds"][1]) == (base / "round-1b.json").read_text()
+
+
+def test_fast_1a_with_findings_does_not_auto_settle(workspace_fast):
+    result = write_round(workspace_fast, "round_1a_input.json")
+    assert result.returncode == 0, result.stderr
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    assert (base / "round-1a.json").exists()
+    assert not (base / "round-1b.json").exists()
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_1b_pending"
+    assert "written_rounds" not in result.stdout
+
+
+def test_thorough_clean_1a_does_not_auto_settle(workspace_with_state):
+    result = write_round(workspace_with_state, "round_1a_clean_input.json")
+    assert result.returncode == 0, result.stderr
+    base = workspace_with_state / ".cross-agent-reviews/foo/spec"
+    assert not (base / "round-1b.json").exists()
+    state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_1b_pending"
+
+
+def test_fast_clean_2a_auto_settles_to_2b(workspace_fast):
+    # Clean 1a auto-settles to 1b; state is now round_2a_pending.
+    write_round(workspace_fast, "round_1a_clean_input.json")
+    result = write_round(workspace_fast, "round_2a_clean_input.json")
+    assert result.returncode == 0, result.stderr
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    assert (base / "round-2a.json").exists()
+    assert (base / "round-2b.json").exists()
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3a_pending"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b"]
+
+
+def test_fast_clean_2a_auto_settled_evidence(workspace_fast):
+    from _cr_lib import compute_content_hash
+
+    write_round(workspace_fast, "round_1a_clean_input.json")
+    write_round(workspace_fast, "round_2a_clean_input.json")
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    settle = json.loads((base / "round-2b.json").read_text())
+    assert settle["stage"] == "2b"
+    ev = settle["auto_settled"]
+    assert ev["source_stage"] == "2a"
+    assert ev["source_round_hash"] == compute_content_hash(base / "round-2a.json")
+
+
+def test_auto_settle_failure_keeps_manual_settle_boundary(workspace_fast):
+    # Pre-create round-1b.json as a non-empty directory so the auto-settle
+    # atomic_write of round-1b.json fails with OSError.
+    artifact_dir = workspace_fast / ".cross-agent-reviews/foo/spec"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    blocker = artifact_dir / "round-1b.json"
+    blocker.mkdir()
+    (blocker / "placeholder").write_text("not a round file")
+
+    result = write_round(workspace_fast, "round_1a_clean_input.json")
+
+    # The audit write succeeded; exit 0.
+    assert result.returncode == 0, result.stderr
+    assert (artifact_dir / "round-1a.json").exists()
+    # State stays exactly at the manual-settle boundary.
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_1b_pending"
+    assert state["spec"]["completed_rounds"] == ["1a"]
+    # Explicit structured failure marker on stderr.
+    assert "AUTO_SETTLE_FAILED:" in result.stderr
+    # stdout is the single 1a audit envelope (byte-identical to the file).
+    assert result.stdout == (artifact_dir / "round-1a.json").read_text()

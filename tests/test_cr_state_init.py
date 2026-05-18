@@ -373,3 +373,39 @@ def test_gitignore_prompt_skipped_when_already_present(workspace):
         ["--artifact-path", str(artifact), "--artifact-type", "spec"], cwd=workspace, stdin=""
     )
     assert result.returncode == 0
+
+
+def test_init_records_mode_and_review_profile(workspace):
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    result = run(
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+            "--review-profile",
+            "patch",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["mode"] == "fast"
+    assert state["spec"]["review_profile"] == "patch"
+
+
+def test_init_without_mode_omits_fields(workspace):
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    result = run(
+        ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())
+    assert "mode" not in state["spec"]
+    assert "review_profile" not in state["spec"]

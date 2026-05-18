@@ -146,3 +146,96 @@ def test_explicit_slug_name_arg(workspace):
     # Slug-name match is also the second invocation after disambiguation, so
     # it MUST emit artifact_type when state.json has a block for the slug.
     assert payload["artifact_type"] == "spec"
+
+
+def test_input_with_mode_and_profile_tokens(workspace):
+    result = run(["--input", "docs/specs/gamma-design.md fast patch"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["slug"] == "gamma"
+    assert payload["artifact_type"] == "spec"
+    assert payload["mode"] == "fast"
+    assert payload["review_profile"] == "patch"
+
+
+def test_input_with_flag_alias_forms(workspace):
+    result = run(
+        ["--input", "docs/specs/gamma-design.md --mode=fast --review-profile greenfield"],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "fast"
+    assert payload["review_profile"] == "greenfield"
+
+
+def test_input_without_tokens_omits_mode_profile(workspace):
+    result = run(["--input", "docs/specs/gamma-design.md"], cwd=workspace)
+    payload = json.loads(result.stdout)
+    assert "mode" not in payload
+    assert "review_profile" not in payload
+
+
+def test_duplicate_mode_tokens_rejected(workspace):
+    result = run(["--input", "docs/specs/gamma-design.md fast thorough"], cwd=workspace)
+    assert result.returncode == 1
+    assert "mode" in result.stderr.lower()
+
+
+def test_duplicate_profile_tokens_rejected(workspace):
+    result = run(["--input", "docs/specs/gamma-design.md patch feature"], cwd=workspace)
+    assert result.returncode == 1
+    assert "profile" in result.stderr.lower()
+
+
+def test_two_path_like_tokens_rejected(workspace):
+    result = run(["--input", "docs/specs/a-design.md docs/specs/b-design.md"], cwd=workspace)
+    assert result.returncode == 1
+
+
+def test_unknown_extra_token_rejected(workspace):
+    result = run(["--input", "docs/specs/gamma-design.md wobble"], cwd=workspace)
+    assert result.returncode == 1
+
+
+def test_reserved_token_without_path_rejected(workspace):
+    result = run(["--input", "fast"], cwd=workspace)
+    assert result.returncode == 1
+    assert "path" in result.stderr.lower() or "slug" in result.stderr.lower()
+
+
+def test_reserved_word_as_filename_substring_is_a_path(workspace):
+    result = run(["--input", "docs/specs/fast-path-design.md"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["slug"] == "fast-path"
+    assert "mode" not in payload
+
+
+def test_dotslash_disambiguates_reserved_word_as_path(workspace):
+    # An artifact literally named `fast` is reachable via an unambiguous path
+    # form (`./fast` contains `/`, so `_looks_like_path` routes it as a path),
+    # whereas the bare token `fast` is always the mode token.
+    result = run(["--input", "./fast"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["slug"] == "fast"
+    assert "mode" not in payload
+
+
+def test_input_slug_target_with_mode_token(workspace):
+    # A bare slug (not a path, not a reserved word) should be accepted as the
+    # target even when mode/profile tokens are present. Use "delta" as a new-
+    # slug name not present in the workspace fixture.
+    result = run(["--input", "delta fast"], cwd=workspace)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["slug"] == "delta"
+    assert payload["mode"] == "fast"
+
+
+def test_input_empty_alias_value_rejected(workspace):
+    # --mode= with an empty value should be rejected with a clear diagnostic.
+    result = run(["--input", "docs/specs/gamma-design.md --mode="], cwd=workspace)
+    assert result.returncode == 1
+    assert "non-empty" in result.stderr

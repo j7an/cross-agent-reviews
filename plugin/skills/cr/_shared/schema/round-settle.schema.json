@@ -64,7 +64,18 @@
     },
     "changelog": {"type": "array", "items": {"$ref": "https://j7an.github.io/cross-agent-reviews/schema/v1/changelog-entry.json"}},
     "self_review": {"type": "array", "items": {"$ref": "https://j7an.github.io/cross-agent-reviews/schema/v1/self-review-entry.json"}},
-    "final_status": {"type": "string", "enum": ["READY_FOR_IMPLEMENTATION", "CORRECTED_PENDING_VERIFICATION"]}
+    "final_status": {"type": "string", "enum": ["READY_FOR_IMPLEMENTATION", "CORRECTED_PENDING_VERIFICATION"]},
+    "auto_settled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trigger", "source_stage", "source_round_hash", "reason"],
+      "properties": {
+        "trigger": {"const": "clean_audit_zero_findings"},
+        "source_stage": {"type": "string", "enum": ["1a", "2a"]},
+        "source_round_hash": {"$ref": "#/$defs/content_hash"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
   },
   "allOf": [
     {"if": {"properties": {"stage": {"const": "1b"}}}, "then": {"properties": {"round": {"const": 1}}, "not": {"required": ["final_status"]}}},
@@ -90,6 +101,21 @@
           "accepted_findings": {"items": {"properties": {"severity": {"const": "blocker"}}}}
         }
       }
+    },
+    {
+      "if": {"properties": {"stage": {"const": "1b"}}, "required": ["stage", "auto_settled"]},
+      "then": {"properties": {"auto_settled": {"properties": {"source_stage": {"const": "1a"}}}}}
+    },
+    {
+      "if": {"properties": {"stage": {"const": "2b"}}, "required": ["stage", "auto_settled"]},
+      "then": {"properties": {"auto_settled": {"properties": {"source_stage": {"const": "2a"}}}}}
+    },
+    {
+      "if": {"properties": {"stage": {"const": "3b"}}},
+      "then": {"not": {"required": ["auto_settled"]}}
     }
-  ]
+  ],
+  "$defs": {
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
 }

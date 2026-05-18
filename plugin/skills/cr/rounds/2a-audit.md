@@ -57,3 +57,22 @@ The agents array MUST contain one verification per accepted Round 1 finding (car
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
+
+The script validates, writes `round-2a.json` to disk, and updates
+`state.json`. Then inspect the result to choose the completion message:
+
+- **stdout is a `{"written_rounds": [...]}` wrapper** — fast mode and the
+  audit was clean, so `round-2b.json` was auto-generated as a no-op settle.
+  Emit the clean-audit auto-settle message from SKILL.md §5. For a cross-host
+  review, present both `written_rounds` elements as separate canonical JSON
+  paste blocks.
+- **stderr carries an `AUTO_SETTLE_FAILED:` marker** — fast mode, the audit
+  was clean, but the no-op settle could not be written. The audit write is
+  valid and state is at `round_2b_pending`. Emit the auto-settle-failure
+  message from SKILL.md §5 (manual round 2b is needed next).
+- **otherwise** (a single round envelope on stdout, no marker) — the ordinary
+  path; emit the standard round-completion message.
+
+A single stdout envelope alone does not imply the ordinary path — the
+`AUTO_SETTLE_FAILED:` marker must be checked, or a failed auto-settle would be
+mistaken for a normal audit completion.

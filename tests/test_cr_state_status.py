@@ -268,3 +268,93 @@ def test_status_via_3b_skips_3c(tmp_path):
     result = run(["--slug", "foo"], cwd=ws)
     assert result.returncode == 0, result.stderr
     assert "skipped (3b accepted zero findings)" in result.stdout
+
+
+def test_status_shows_mode_and_profile(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews" / "foo"
+    (slug_dir / "spec").mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_1a_pending",
+            "completed_rounds": [],
+            "started_at": "2026-05-17T10:00:00Z",
+            "last_updated_at": "2026-05-17T10:00:00Z",
+            "mode": "fast",
+            "review_profile": "patch",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    result = run(["--slug", "foo"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "fast" in result.stdout
+    assert "patch" in result.stdout
+
+
+def test_status_legacy_mode_profile_defaults(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews" / "foo"
+    (slug_dir / "spec").mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_1a_pending",
+            "completed_rounds": [],
+            "started_at": "2026-05-17T10:00:00Z",
+            "last_updated_at": "2026-05-17T10:00:00Z",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    result = run(["--slug", "foo"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "thorough (default)" in result.stdout
+    assert "legacy" in result.stdout.lower()
+
+
+def test_status_marks_auto_settled_round(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews" / "foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": "round_2a_pending",
+            "completed_rounds": ["1a", "1b"],
+            "started_at": "2026-05-17T10:00:00Z",
+            "last_updated_at": "2026-05-17T10:05:00Z",
+            "mode": "fast",
+        },
+    }
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    (spec_dir / "round-1a.json").write_text(
+        json.dumps({"emitted_at": "2026-05-17T10:00:00Z"}) + "\n"
+    )
+    (spec_dir / "round-1b.json").write_text(
+        json.dumps(
+            {
+                "emitted_at": "2026-05-17T10:05:00Z",
+                "auto_settled": {
+                    "trigger": "clean_audit_zero_findings",
+                    "source_stage": "1a",
+                    "source_round_hash": "sha256:" + "a" * 64,
+                    "reason": "auto",
+                },
+            }
+        )
+        + "\n"
+    )
+    result = run(["--slug", "foo"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "auto-settled" in result.stdout
+    assert "clean 1a" in result.stdout

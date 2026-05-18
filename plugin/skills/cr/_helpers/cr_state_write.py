@@ -54,6 +54,23 @@ def _is_clean_3a(envelope: dict) -> bool:
     return all(a["status"] == "ship_ready" for a in envelope["agents"])
 
 
+def _is_clean_1a(envelope: dict) -> bool:
+    """True when every agent in a 1a envelope is `clean` (⇒ zero findings)."""
+    return all(a["status"] == "clean" for a in envelope["agents"])
+
+
+def _is_clean_2a(envelope: dict) -> bool:
+    """True when a 2a envelope is clean: every agent `verified`, zero new
+    findings, and every round-1 verification `resolved`."""
+    if not all(a["status"] == "verified" for a in envelope["agents"]):
+        return False
+    if any(a["findings"] for a in envelope["agents"]):
+        return False
+    return all(
+        v["status"] == "resolved" for a in envelope["agents"] for v in a["round_1_verifications"]
+    )
+
+
 def _attempt_files(artifact_dir: Path) -> list[dict]:
     """Return parsed round-3c-attempt-*.json envelopes, sorted by attempt_number.
 
@@ -477,6 +494,69 @@ def _read_optional(path: Path) -> dict | None:
     return json.loads(path.read_text()) if path.exists() else None
 
 
+def _auto_settle(
+    audit_envelope: dict,
+    state: dict,
+    artifact_type: str,
+    artifact_path: str,
+    slug: str,
+    artifact_dir: Path,
+    state_path: Path,
+    repo_root: Path,
+) -> dict:
+    """Generate, validate, and persist the no-op settle paired with a clean
+    fast-mode audit. Reuses the manual-settle build/validate/persist path so
+    auto-settle cannot bypass any check. Returns the settle envelope. Raises
+    on any failure — the caller catches it and degrades to a manual settle.
+
+    The audit round file and state.json have ALREADY been written by the
+    caller before this runs; this function only ever advances state PAST the
+    manual-settle boundary, never rolls the audit write back.
+    """
+    audit_stage = audit_envelope["stage"]
+    settle_stage = {"1a": "1b", "2a": "2b"}[audit_stage]
+    payload = {
+        "stage": settle_stage,
+        "adjudications": [],
+        "changelog": [],
+        "self_review": [],
+    }
+    envelope = _build_settle_envelope(
+        slug, artifact_type, artifact_path, payload, audit_envelope, None
+    )
+    source_hash = compute_content_hash(artifact_dir / f"round-{audit_stage}.json")
+    agent_count = len(audit_envelope["agents"])
+    envelope["auto_settled"] = {
+        "trigger": "clean_audit_zero_findings",
+        "source_stage": audit_stage,
+        "source_round_hash": source_hash,
+        "reason": (
+            f"Clean {audit_stage} audit: {agent_count} agents reported no "
+            f"blocking findings; no-op settle auto-generated in fast mode."
+        ),
+    }
+    schema = load_schema("round-settle.schema.json")
+    Draft202012Validator(schema, registry=build_registry()).validate(envelope)
+    body = canonical_json(envelope)
+    # Compute the artifact hash up-front: it is the only other operation here
+    # that can raise (e.g. the artifact file was moved/deleted), so doing it
+    # before the round-file write ensures a hash failure cannot leave a
+    # partial settle on disk.
+    artifact_hash = compute_content_hash(repo_root / artifact_path)
+    # Round file first: if this raises, state stays at the manual-settle
+    # boundary and the caller reports AUTO_SETTLE_FAILED. After this point the
+    # only operation that can fail is the state.json write itself.
+    atomic_write(artifact_dir / f"round-{settle_stage}.json", body)
+    block = state[artifact_type]
+    block["completed_rounds"] = sorted({*block["completed_rounds"], settle_stage})
+    block["current_stage"] = NEXT_STAGE[settle_stage]
+    block["last_updated_at"] = envelope["emitted_at"]
+    block["content_hash"] = artifact_hash
+    state[artifact_type] = block
+    atomic_write(state_path, canonical_json(state))
+    return envelope
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--slug", required=True)
@@ -675,6 +755,33 @@ def main() -> int:
         block["content_hash"] = compute_content_hash(repo_root / args.artifact_path)
     state[args.artifact_type] = block
     atomic_write(state_path, canonical_json(state))
+
+    # Auto-settle: in fast mode a clean 1a/2a audit gets its no-op settle
+    # generated in-process. Eligibility is decided here, never by the router.
+    if stage in {"1a", "2a"} and block.get("mode") == "fast":
+        is_clean = _is_clean_1a(envelope) if stage == "1a" else _is_clean_2a(envelope)
+        if is_clean:
+            try:
+                settle_env = _auto_settle(
+                    envelope,
+                    state,
+                    args.artifact_type,
+                    args.artifact_path,
+                    args.slug,
+                    artifact_dir,
+                    state_path,
+                    repo_root,
+                )
+            except Exception as exc:  # degrade to manual settle
+                # Failure isolation: the audit write above is committed and
+                # valid; state stays at the manual-settle boundary. Emit an
+                # explicit structured marker so the round procedure can tell
+                # this apart from an ordinary manual-settle path.
+                print(f"AUTO_SETTLE_FAILED: {exc}", file=sys.stderr)
+                sys.stdout.write(body)
+                return 0
+            sys.stdout.write(canonical_json({"written_rounds": [envelope, settle_env]}))
+            return 0
 
     sys.stdout.write(body)
     return 0
