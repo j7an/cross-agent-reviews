@@ -22,6 +22,7 @@ from _cr_lib import (
     build_registry,
     canonical_json,
     compute_content_hash,
+    err,
     find_repo_root,
     load_schema,
     now_iso8601_utc,
@@ -124,11 +125,6 @@ def _check_verification_set(
     if extra:
         return f"3c verifies finding id(s) not accepted by 3b: {extra}"
     return None
-
-
-def _err(msg: str) -> int:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    return 1
 
 
 def _assign_finding_ids(round_num: int, agents: list[dict]) -> None:
@@ -568,20 +564,19 @@ def main() -> int:
     try:
         validate_slug(args.slug)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        return err(str(e))
 
     payload = json.loads(args.input.read_text())
     stage = payload.get("stage")
     if stage not in STAGE_TO_ROUND:
-        return _err(f"unknown stage: {stage!r}")
+        return err(f"unknown stage: {stage!r}")
 
     repo_root = find_repo_root(Path.cwd())
     slug_dir = state_dir(repo_root) / args.slug
     artifact_dir = slug_dir / args.artifact_type
     state_path = slug_dir / "state.json"
     if not state_path.exists():
-        return _err(f"no state.json for slug {args.slug!r}; run cr_state_init first")
+        return err(f"no state.json for slug {args.slug!r}; run cr_state_init first")
     state = json.loads(state_path.read_text())
     # Schema validation guards against hand-edited or otherwise corrupted
     # state.json: without this, the writer would mutate schema-violating
@@ -597,7 +592,7 @@ def main() -> int:
         Draft202012Validator(state_schema, registry=state_registry).validate(state)
     except jsonschema.ValidationError as e:
         path = "/" + "/".join(str(p) for p in e.absolute_path)
-        return _err(f"state.json schema violation: {e.message} at {path}")
+        return err(f"state.json schema violation: {e.message} at {path}")
     # Both-block invariant: if state has both spec and plan blocks, the plan
     # block MUST carry `spec_hash_at_start`. The state.schema.json cannot
     # express this conditional requirement, and `_cmd_check_spec_drift` in
@@ -608,7 +603,7 @@ def main() -> int:
     # bypassed the same check elsewhere must surface here before any further
     # round envelope is emitted.
     if "spec" in state and "plan" in state and "spec_hash_at_start" not in state.get("plan", {}):
-        return _err(
+        return err(
             "state integrity: state.json has both 'spec' and 'plan' blocks "
             "but state.plan.spec_hash_at_start is missing (would silently "
             "bypass spec-drift detection). Re-run cr_state_init for the "
@@ -616,11 +611,11 @@ def main() -> int:
         )
     block = state.get(args.artifact_type)
     if block is None:
-        return _err(f"state.json has no {args.artifact_type!r} block; run cr_state_init")
+        return err(f"state.json has no {args.artifact_type!r} block; run cr_state_init")
 
     expected_stage = block["current_stage"].replace("round_", "").replace("_pending", "")
     if expected_stage != stage:
-        return _err(f"state expects stage {expected_stage!r} next; got {stage!r}")
+        return err(f"state expects stage {expected_stage!r} next; got {stage!r}")
 
     # Identity check: --artifact-path MUST match what state.json captured at
     # init time. Without this, a local write can silently produce a round
@@ -629,7 +624,7 @@ def main() -> int:
     # destination host (§10.3 identity contract). Failing fast here keeps the
     # diagnostic local instead of surfacing only after a cross-host paste.
     if args.artifact_path != block["path"]:
-        return _err(
+        return err(
             f"--artifact-path {args.artifact_path!r} does not match the path captured in "
             f"state.json for {args.artifact_type!r} block ({block['path']!r}). "
             f"Re-run with --artifact-path {block['path']}."
@@ -640,7 +635,7 @@ def main() -> int:
     if stage in VERIFY_STAGES:
         paired_3b = _read_optional(artifact_dir / "round-3b.json")
         if paired_3b is None:
-            return _err("3c requires round-3b.json (the accepted-blocker source) on disk")
+            return err("3c requires round-3b.json (the accepted-blocker source) on disk")
         try:
             envelope, verified_hash = _build_verification_envelope(
                 args.slug,
@@ -652,13 +647,13 @@ def main() -> int:
                 repo_root,
             )
         except ValueError as e:
-            return _err(str(e))
+            return err(str(e))
         schema = load_schema("final-verification.schema.json")
         try:
             Draft202012Validator(schema, registry=build_registry()).validate(envelope)
         except jsonschema.ValidationError as e:
             path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-            return _err(f"schema violation at {path}: {e.message}")
+            return err(f"schema violation at {path}: {e.message}")
         _persist_verification(
             envelope,
             verified_hash,
@@ -696,7 +691,7 @@ def main() -> int:
             )
         else:
             if paired_audit is None:
-                return _err(f"settle stage {stage} requires the paired audit file")
+                return err(f"settle stage {stage} requires the paired audit file")
             envelope = _build_settle_envelope(
                 args.slug,
                 args.artifact_type,
@@ -706,7 +701,7 @@ def main() -> int:
                 prior_settle,
             )
     except ValueError as e:
-        return _err(str(e))
+        return err(str(e))
 
     schema_name = "round-audit.schema.json" if stage in AUDIT_STAGES else "round-settle.schema.json"
     schema = load_schema(schema_name)
@@ -715,22 +710,22 @@ def main() -> int:
         Draft202012Validator(schema, registry=registry).validate(envelope)
     except jsonschema.ValidationError as e:
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-        return _err(f"schema violation at {path}: {e.message}")
+        return err(f"schema violation at {path}: {e.message}")
 
     # Cross-round invariants
     if stage == "2a":
         if prior_settle is None:
-            return _err(
+            return err(
                 "round 2a requires round-1b.json (the prior round-1b settle "
                 "file, source of the accepted findings 2a verifies) on disk"
             )
         msg = _cross_round_check_2a(envelope, prior_settle)
         if msg:
-            return _err(msg)
+            return err(msg)
     if stage in {"2a", "3a"} and prior_audit is not None:
         msg = _check_slice_plan_frozen(envelope, prior_audit)
         if msg:
-            return _err(msg)
+            return err(msg)
 
     body = canonical_json(envelope)
     atomic_write(artifact_dir / f"round-{stage}.json", body)
