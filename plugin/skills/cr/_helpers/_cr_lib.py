@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -141,6 +142,17 @@ def build_registry() -> Registry:
 
 def canonical_json(obj: object) -> str:
     return json.dumps(obj, indent=2, sort_keys=True) + "\n"
+
+
+def err(msg: str, *, code: int = 1) -> int:
+    """Print a `ERROR: <msg>` line to stderr and return `code`.
+
+    Single source of truth for CLI error formatting across the cr_state_*
+    helper scripts. Callers use the return value as their process exit code,
+    e.g. `return err("no state for slug", code=3)`.
+    """
+    print(f"ERROR: {msg}", file=sys.stderr)
+    return code
 
 
 CLEAN_3A_TERMINAL = frozenset({"1a", "1b", "2a", "2b", "3a"})

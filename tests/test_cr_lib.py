@@ -1,5 +1,6 @@
 """Tests for the shared helper module used by every cr_*.py script."""
 
+import inspect
 import re
 from pathlib import Path
 
@@ -176,3 +177,25 @@ def test_canonical_json_indent_2():
 )
 def test_terminal_shape(completed, expected):
     assert lib.terminal_shape(completed) == expected
+
+
+# --- err ---
+
+
+def test_err_writes_error_prefix_to_stderr(capsys):
+    rc = lib.err("something broke")
+    captured = capsys.readouterr()
+    assert captured.err == "ERROR: something broke\n"
+    assert captured.out == ""
+    assert rc == 1
+
+
+def test_err_returns_explicit_code(capsys):
+    assert lib.err("schema bad", code=3) == 3
+    assert lib.err("not found", code=2) == 2
+    capsys.readouterr()  # drain
+
+
+def test_err_code_is_keyword_only():
+    sig = inspect.signature(lib.err)
+    assert sig.parameters["code"].kind is inspect.Parameter.KEYWORD_ONLY
