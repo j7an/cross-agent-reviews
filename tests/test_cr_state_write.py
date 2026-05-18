@@ -1085,3 +1085,29 @@ def test_thorough_clean_1a_does_not_auto_settle(workspace_with_state):
     assert not (base / "round-1b.json").exists()
     state = json.loads((workspace_with_state / ".cross-agent-reviews/foo/state.json").read_text())
     assert state["spec"]["current_stage"] == "round_1b_pending"
+
+
+def test_fast_clean_2a_auto_settles_to_2b(workspace_fast):
+    # Clean 1a auto-settles to 1b; state is now round_2a_pending.
+    write_round(workspace_fast, "round_1a_clean_input.json")
+    result = write_round(workspace_fast, "round_2a_clean_input.json")
+    assert result.returncode == 0, result.stderr
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    assert (base / "round-2a.json").exists()
+    assert (base / "round-2b.json").exists()
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3a_pending"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b"]
+
+
+def test_fast_clean_2a_auto_settled_evidence(workspace_fast):
+    from _cr_lib import compute_content_hash
+
+    write_round(workspace_fast, "round_1a_clean_input.json")
+    write_round(workspace_fast, "round_2a_clean_input.json")
+    base = workspace_fast / ".cross-agent-reviews/foo/spec"
+    settle = json.loads((base / "round-2b.json").read_text())
+    assert settle["stage"] == "2b"
+    ev = settle["auto_settled"]
+    assert ev["source_stage"] == "2a"
+    assert ev["source_round_hash"] == compute_content_hash(base / "round-2a.json")
