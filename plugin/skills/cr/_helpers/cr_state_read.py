@@ -18,6 +18,7 @@ from _cr_lib import (
     build_registry,
     canonical_json,
     compute_content_hash,
+    err,
     find_repo_root,
     load_schema,
     now_iso8601_utc,
@@ -42,11 +43,6 @@ from cr_state_write import (
 from jsonschema import Draft202012Validator
 
 ROUND_STAGES = ("1a", "1b", "2a", "2b", "3a", "3b", "3c")
-
-
-def _err(msg: str, *, code: int = 1) -> int:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    return code
 
 
 def _read_round_files(artifact_dir: Path) -> dict[str, dict]:
@@ -173,25 +169,25 @@ def _classify(state: dict, artifact_type: str, artifact_dir: Path) -> dict:
 def _cmd_read(repo_root: Path, slug: str, artifact_type: str) -> int:
     state_path = state_dir(repo_root) / slug / "state.json"
     if not state_path.exists():
-        return _err(f"no state for slug {slug!r}")
+        return err(f"no state for slug {slug!r}")
     state = json.loads(state_path.read_text())
     artifact_dir = state_dir(repo_root) / slug / artifact_type
     classification = _classify(state, artifact_type, artifact_dir)
     sys.stdout.write(canonical_json({"state": state, **classification}))
     if classification["integrity"] == "STATE_INTEGRITY_ERROR":
         if classification["integrity_reason"] == "invalid_terminal_shape":
-            return _err(
+            return err(
                 "STATE_INTEGRITY_ERROR: current_stage is ready_for_implementation "
                 "but completed_rounds is neither terminal shape",
                 code=3,
             )
         if classification["integrity_reason"] == "verification_skipped":
-            return _err(
+            return err(
                 "STATE_INTEGRITY_ERROR: completed at round 3b with accepted "
                 "findings but final verification (3c) did not run",
                 code=3,
             )
-        return _err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
+        return err("STATE_INTEGRITY_ERROR: state.last_updated_at < max round emitted_at", code=3)
     return 0
 
 
@@ -225,14 +221,14 @@ def _cmd_resolve_drift(repo_root: Path, slug: str, mode: str) -> int:
     router simply halts."""
     state_path = state_dir(repo_root) / slug / "state.json"
     if not state_path.exists():
-        return _err(f"no state.json for slug {slug!r}")
+        return err(f"no state.json for slug {slug!r}")
     state = json.loads(state_path.read_text())
     plan = state.get("plan")
     if plan is None:
-        return _err(f"no plan block for slug {slug!r}; nothing to resolve")
+        return err(f"no plan block for slug {slug!r}; nothing to resolve")
     spec = state.get("spec")
     if spec is None:
-        return _err(f"slug {slug!r} has no spec block; cannot resolve drift")
+        return err(f"slug {slug!r} has no spec block; cannot resolve drift")
     if mode == "accept":
         spec_path = repo_root / spec["path"]
         current_hash = compute_content_hash(spec_path)
@@ -252,7 +248,7 @@ def _cmd_resolve_drift(repo_root: Path, slug: str, mode: str) -> int:
         atomic_write(state_path, canonical_json(state))
         sys.stdout.write(canonical_json(state))
         return 0
-    return _err(f"unknown drift-resolution mode: {mode!r}; use 'accept' or 'restart'")
+    return err(f"unknown drift-resolution mode: {mode!r}; use 'accept' or 'restart'")
 
 
 def _check_agents_match_slice_plan(envelope: dict) -> str | None:
@@ -546,7 +542,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     try:
         instance = json.loads(raw)
     except json.JSONDecodeError as e:
-        return _err(f"invalid JSON: {e}")
+        return err(f"invalid JSON: {e}")
     registry = build_registry()
     is_bootstrap = (
         "schema_version" in instance
@@ -556,12 +552,12 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     state_path = state_dir(repo_root) / slug / "state.json"
     if is_bootstrap:
         if state_path.exists():
-            return _err(f"refusing to clobber existing state.json for slug {slug!r}")
+            return err(f"refusing to clobber existing state.json for slug {slug!r}")
         schema = load_schema("state.schema.json")
         try:
             Draft202012Validator(schema, registry=registry).validate(instance)
         except jsonschema.ValidationError as e:
-            return _err(f"state schema violation: {e.message}")
+            return err(f"state schema violation: {e.message}")
         # Both-block invariant: state.schema.json cannot conditionally require
         # `state.plan.spec_hash_at_start` only when both blocks exist. Without
         # this script-level check, a schema-valid pasted state with both blocks
@@ -575,7 +571,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
             and "plan" in instance
             and "spec_hash_at_start" not in instance.get("plan", {})
         ):
-            return _err(
+            return err(
                 "state integrity: pasted state has both 'spec' and 'plan' "
                 "blocks but plan.spec_hash_at_start is missing (would silently "
                 "bypass spec-drift detection)."
@@ -597,14 +593,14 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
             completed = block.get("completed_rounds", [])
             if stage == "round_1a_pending":
                 if completed:
-                    return _err(
+                    return err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='round_1a_pending' but "
                         f"completed_rounds={completed!r} (must be [])"
                     )
             elif stage == "round_3c_pending":
                 if set(completed) != {"1a", "1b", "2a", "2b", "3a", "3b"}:
-                    return _err(
+                    return err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='round_3c_pending' but "
                         f"completed_rounds={completed!r} (must be "
@@ -612,7 +608,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                     )
             elif stage == "ready_for_implementation":
                 if terminal_shape(completed) == "invalid":
-                    return _err(
+                    return err(
                         f"state integrity: bootstrap state.{block_name} has "
                         f"current_stage='ready_for_implementation' but "
                         f"completed_rounds={completed!r} (must be the clean-3a "
@@ -621,7 +617,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                         f"terminal {sorted(VIA_3C_TERMINAL)})"
                     )
             else:
-                return _err(
+                return err(
                     f"state integrity: bootstrap state.{block_name} has "
                     f"current_stage={stage!r} which is not legal for a fresh "
                     "bootstrap (must be 'round_1a_pending' with empty "
@@ -630,7 +626,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
                     "'ready_for_implementation' with all rounds completed)"
                 )
         if instance.get("slug") != slug:
-            return _err(
+            return err(
                 f"slug mismatch: state.json has {instance.get('slug')!r}, --slug says {slug!r}"
             )
         # First-time bootstrap on a fresh host: `<state_dir>/<slug>/` does
@@ -647,7 +643,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
 
     # Round paste
     if not state_path.exists():
-        return _err(f"no local state.json for slug {slug!r}; bootstrap first")
+        return err(f"no local state.json for slug {slug!r}; bootstrap first")
     state = json.loads(state_path.read_text())
     if instance.get("stage") == "3c":
         schema_name = "final-verification.schema.json"
@@ -659,19 +655,19 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     try:
         Draft202012Validator(schema, registry=registry).validate(instance)
     except jsonschema.ValidationError as e:
-        return _err(f"round schema violation: {e.message}")
+        return err(f"round schema violation: {e.message}")
     if instance.get("stage") == "3c" and instance.get("result") != "passed":
-        return _err(
+        return err(
             f"3c paste: result={instance.get('result')!r} — only a passing round-3c.json "
             "is paste-importable; failed round-3c-attempt-NNN.json files are host-local "
             "diagnostics"
         )
     if instance["slug"] != slug:
-        return _err(f"slug mismatch: paste has {instance['slug']!r}, --slug says {slug!r}")
+        return err(f"slug mismatch: paste has {instance['slug']!r}, --slug says {slug!r}")
     artifact_type = instance["artifact_type"]
     block = state.get(artifact_type)
     if block is None or instance["artifact_path"] != block["path"]:
-        return _err("artifact_path mismatch with local state.json")
+        return err("artifact_path mismatch with local state.json")
     expected_stage = block["current_stage"].replace("round_", "").replace("_pending", "")
     artifact_dir = state_dir(repo_root) / slug / artifact_type
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -686,7 +682,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     if pending is not None:
         expected_stage = pending
     if instance["stage"] != expected_stage:
-        return _err(f"stage mismatch: expected {expected_stage!r}, paste has {instance['stage']!r}")
+        return err(f"stage mismatch: expected {expected_stage!r}, paste has {instance['stage']!r}")
     # Cross-round invariants: replay the same checks `cr_state_write.py`
     # applies to local writes so a schema-valid but locally-impossible paste
     # is rejected before it touches disk. Required prior round files must be
@@ -694,7 +690,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     # `completed_rounds` and the on-disk round files agree).
     invariant_err = _paste_cross_round_invariants(instance, artifact_dir)
     if invariant_err is not None:
-        return _err(invariant_err)
+        return err(invariant_err)
     # Clean-3a parity for terminal backfill: when the pending import is the
     # 3a round of a `ready_for_implementation` block, the pasted 3a's clean
     # status MUST agree with the block's terminal shape. A clean_3a terminal
@@ -709,12 +705,12 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         shape = terminal_shape(block["completed_rounds"])
         clean = _is_clean_3a(instance)
         if shape == "clean_3a" and not clean:
-            return _err(
+            return err(
                 "clean-3a parity: state is a clean_3a terminal but the pasted "
                 "round-3a.json contains a blocker (every 3a agent must be ship_ready)"
             )
         if shape == "via_3b" and clean:
-            return _err(
+            return err(
                 "clean-3a parity: state is a via_3b terminal but the pasted "
                 "round-3a.json is clean (a clean 3a terminates without running 3b)"
             )
@@ -735,7 +731,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         and terminal_shape(block["completed_rounds"]) == "via_3b"
         and instance["final_status"] == "CORRECTED_PENDING_VERIFICATION"
     ):
-        return _err(
+        return err(
             "3b parity: state is a via_3b terminal but the pasted "
             "round-3b.json is CORRECTED_PENDING_VERIFICATION (an accepted "
             "3b implies a via_3c terminal — final verification 3c must "
@@ -748,7 +744,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     if instance["stage"] == "3c":
         local_hash = compute_content_hash(repo_root / block["path"])
         if local_hash != instance["verified_content_hash"]:
-            return _err(
+            return err(
                 "3c paste: local artifact bytes do not match the pasted "
                 "verified_content_hash — the operator must also carry the "
                 "verified artifact to this host before importing the passing "
@@ -757,7 +753,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
         # Backfill into an already-terminal via_3c state: state is not
         # rewritten, so block.content_hash must already be correct.
         if pending == "3c" and block["content_hash"] != instance["verified_content_hash"]:
-            return _err(
+            return err(
                 "3c paste: state.json content_hash for a via_3c terminal "
                 "disagrees with the pasted round-3c.json verified_content_hash "
                 "(bootstrapped state is inconsistent)"
@@ -771,14 +767,14 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     if auto is not None:
         source_round_path = artifact_dir / f"round-{auto['source_stage']}.json"
         if not source_round_path.exists():
-            return _err(
+            return err(
                 f"auto-settled paste: the source audit round "
                 f"round-{auto['source_stage']}.json is not present on this host "
                 "— paste the audit round before its auto-settled settle round"
             )
         local_source_hash = compute_content_hash(source_round_path)
         if local_source_hash != auto["source_round_hash"]:
-            return _err(
+            return err(
                 "auto-settled paste: auto_settled.source_round_hash does not "
                 f"match the local round-{auto['source_stage']}.json bytes — the "
                 "pasted settle round pins a different audit round than this "
@@ -841,15 +837,15 @@ def _cmd_assert(
     stored `review_profile` is legacy/unset and matches no declared profile."""
     state_path = state_dir(repo_root) / slug / "state.json"
     if not state_path.exists():
-        return _err(f"no state for slug {slug!r}")
+        return err(f"no state for slug {slug!r}")
     state = json.loads(state_path.read_text())
     block = state.get(artifact_type)
     if block is None:
-        return _err(f"state.json has no {artifact_type!r} block")
+        return err(f"state.json has no {artifact_type!r} block")
     if assert_mode is not None:
         locked = block.get("mode", "thorough")
         if assert_mode != locked:
-            return _err(
+            return err(
                 f"BLOCKED:mode-conflict — requested mode {assert_mode!r} but the "
                 f"{artifact_type} block is locked to {locked!r}; mode is fixed at init."
             )
@@ -857,7 +853,7 @@ def _cmd_assert(
         locked = block.get("review_profile")
         if assert_profile != locked:
             shown = locked if locked is not None else "legacy/unset"
-            return _err(
+            return err(
                 f"BLOCKED:profile-conflict — requested review_profile "
                 f"{assert_profile!r} but the {artifact_type} block is locked to "
                 f"{shown!r}; review_profile is fixed at init."
@@ -883,8 +879,7 @@ def main() -> int:
     try:
         validate_slug(args.slug)
     except ValueError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        return err(str(e))
 
     repo_root = find_repo_root(Path.cwd())
     if args.paste:
@@ -895,12 +890,12 @@ def main() -> int:
         return _cmd_check_spec_drift(repo_root, args.slug)
     if args.assert_mode is not None or args.assert_profile is not None:
         if args.artifact_type is None:
-            return _err("--artifact-type required for assert mode")
+            return err("--artifact-type required for assert mode")
         return _cmd_assert(
             repo_root, args.slug, args.artifact_type, args.assert_mode, args.assert_profile
         )
     if args.artifact_type is None:
-        return _err("--artifact-type required for read mode")
+        return err("--artifact-type required for read mode")
     return _cmd_read(repo_root, args.slug, args.artifact_type)
 
 
