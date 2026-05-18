@@ -84,6 +84,8 @@ def _new_artifact_block(
     content_hash: str,
     artifact_type: str,
     spec_hash: str | None,
+    mode: str | None = None,
+    review_profile: str | None = None,
 ) -> dict:
     """Build a fresh state block.
 
@@ -105,6 +107,10 @@ def _new_artifact_block(
     }
     if artifact_type == "plan" and spec_hash is not None:
         block["spec_hash_at_start"] = spec_hash
+    if mode is not None:
+        block["mode"] = mode
+    if review_profile is not None:
+        block["review_profile"] = review_profile
     return block
 
 
@@ -113,6 +119,8 @@ def main() -> int:
     parser.add_argument("--artifact-path", required=True, type=Path)
     parser.add_argument("--artifact-type", choices=["spec", "plan"], required=True)
     parser.add_argument("--no-gitignore-prompt", action="store_true")
+    parser.add_argument("--mode", choices=["thorough", "fast"])
+    parser.add_argument("--review-profile", choices=["patch", "feature", "greenfield"])
     args = parser.parse_args()
 
     artifact = args.artifact_path
@@ -178,6 +186,8 @@ def main() -> int:
                 content_hash=content_hash,
                 artifact_type="plan",
                 spec_hash=spec_hash,
+                mode=args.mode,
+                review_profile=args.review_profile,
             )
         else:
             # Adding a spec block to a slug that already has a plan block would
@@ -200,6 +210,8 @@ def main() -> int:
                 content_hash=content_hash,
                 artifact_type="spec",
                 spec_hash=None,
+                mode=args.mode,
+                review_profile=args.review_profile,
             )
     else:
         if existing.get("current_stage") == "ready_for_implementation":
@@ -223,6 +235,8 @@ def main() -> int:
                 content_hash=content_hash,
                 artifact_type=block_key,
                 spec_hash=spec_hash,
+                mode=args.mode,
+                review_profile=args.review_profile,
             )
         else:
             print(
