@@ -1111,3 +1111,27 @@ def test_fast_clean_2a_auto_settled_evidence(workspace_fast):
     ev = settle["auto_settled"]
     assert ev["source_stage"] == "2a"
     assert ev["source_round_hash"] == compute_content_hash(base / "round-2a.json")
+
+
+def test_auto_settle_failure_keeps_manual_settle_boundary(workspace_fast):
+    # Pre-create round-1b.json as a non-empty directory so the auto-settle
+    # atomic_write of round-1b.json fails with OSError.
+    artifact_dir = workspace_fast / ".cross-agent-reviews/foo/spec"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    blocker = artifact_dir / "round-1b.json"
+    blocker.mkdir()
+    (blocker / "placeholder").write_text("not a round file")
+
+    result = write_round(workspace_fast, "round_1a_clean_input.json")
+
+    # The audit write succeeded; exit 0.
+    assert result.returncode == 0, result.stderr
+    assert (artifact_dir / "round-1a.json").exists()
+    # State stays exactly at the manual-settle boundary.
+    state = json.loads((workspace_fast / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_1b_pending"
+    assert state["spec"]["completed_rounds"] == ["1a"]
+    # Explicit structured failure marker on stderr.
+    assert "AUTO_SETTLE_FAILED:" in result.stderr
+    # stdout is the single 1a audit envelope (byte-identical to the file).
+    assert result.stdout == (artifact_dir / "round-1a.json").read_text()
