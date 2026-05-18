@@ -1418,3 +1418,102 @@ def test_paste_3c_rejects_verification_set_mismatch(host_b_at_3c_pending):
 # A test for either path would be test theater — it cannot reach the branch
 # it claims to cover. The check is retained as a defense-in-depth guard
 # against future schema relaxation.
+
+
+# ---------------------------------------------------------------------------
+# --assert-mode / --assert-profile tests
+# ---------------------------------------------------------------------------
+
+
+def _write_state_with_mode(workspace, *, mode=None, review_profile=None):
+    slug_dir = workspace / ".cross-agent-reviews" / "foo"
+    (slug_dir / "spec").mkdir(parents=True)
+    block = {
+        "path": "docs/specs/foo-design.md",
+        "content_hash": "sha256:" + "0" * 64,
+        "current_stage": "round_1b_pending",
+        "completed_rounds": ["1a"],
+        "started_at": "2026-05-17T10:00:00Z",
+        "last_updated_at": "2026-05-17T10:00:00Z",
+    }
+    if mode is not None:
+        block["mode"] = mode
+    if review_profile is not None:
+        block["review_profile"] = review_profile
+    state = {"schema_version": 1, "slug": "foo", "spec": block}
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def test_assert_mode_match_exits_zero(workspace):
+    _write_state_with_mode(workspace, mode="fast")
+    result = run(
+        SCRIPT, ["--slug", "foo", "--artifact-type", "spec", "--assert-mode", "fast"], cwd=workspace
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_assert_mode_conflict_exits_nonzero(workspace):
+    _write_state_with_mode(workspace, mode="fast")
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--assert-mode", "thorough"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "mode-conflict" in result.stderr
+    assert "fast" in result.stderr
+
+
+def test_assert_mode_thorough_matches_absent_mode(workspace):
+    _write_state_with_mode(workspace)  # legacy: no mode
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--assert-mode", "thorough"],
+        cwd=workspace,
+    )
+    assert result.returncode == 0
+
+
+def test_assert_mode_fast_conflicts_with_absent_mode(workspace):
+    _write_state_with_mode(workspace)  # legacy: no mode -> effective thorough
+    result = run(
+        SCRIPT, ["--slug", "foo", "--artifact-type", "spec", "--assert-mode", "fast"], cwd=workspace
+    )
+    assert result.returncode != 0
+    assert "mode-conflict" in result.stderr
+
+
+def test_assert_profile_match_exits_zero(workspace):
+    _write_state_with_mode(workspace, review_profile="patch")
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--assert-profile", "patch"],
+        cwd=workspace,
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_assert_profile_conflict_exits_nonzero(workspace):
+    _write_state_with_mode(workspace, review_profile="patch")
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--assert-profile", "feature"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "profile-conflict" in result.stderr
+    assert "patch" in result.stderr
+
+
+def test_assert_profile_conflicts_with_absent_profile(workspace):
+    _write_state_with_mode(workspace)  # legacy: no review_profile
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--assert-profile", "patch"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "profile-conflict" in result.stderr
+    assert "legacy/unset" in result.stderr
