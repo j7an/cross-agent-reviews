@@ -295,12 +295,21 @@ check_contains "plugin/skills/cr/rounds/3c-verify.md" \
 # F7: SKILL.md must document the non-mutating-path mode/profile rule (issue
 # #26). A conflicting mode/profile token on a terminal or pending-import rerun
 # must warn-and-continue, not halt with BLOCKED:* and not be silently dropped.
-# Grep stable anchors — the section heading and one durable phrase — not the
-# illustrative `fast`/`thorough` example values.
+# Two anchor classes: STRUCTURAL (the section exists) and BEHAVIORAL (the
+# warn-and-continue semantics survive). Behavioral anchors are required —
+# structural anchors alone still pass if the rule is weakened back to
+# halt-or-silent. Anchor on stable instruction phrases, never the illustrative
+# `fast`/`thorough` example values.
 check_contains plugin/skills/cr/SKILL.md "Mode/profile tokens on non-mutating paths" \
   "F7: SKILL.md documents the non-mutating-path mode/profile rule"
 check_contains plugin/skills/cr/SKILL.md "non-mutating continuations" \
   "F7: SKILL.md frames terminal/pending-import reruns as non-mutating continuations"
+check_contains plugin/skills/cr/SKILL.md "Do NOT halt" \
+  "F7: SKILL.md keeps the no-halt behavior for conflicting tokens on non-mutating paths"
+check_contains plugin/skills/cr/SKILL.md "Emit a one-line" \
+  "F7: SKILL.md keeps the emit-NOTICE behavior for conflicting tokens"
+check_contains plugin/skills/cr/SKILL.md "then continue with the branch" \
+  "F7: SKILL.md keeps the continue-after-NOTICE behavior for conflicting tokens"
 
 # --- Summary ---
 

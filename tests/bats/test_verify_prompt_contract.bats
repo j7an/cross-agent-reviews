@@ -104,3 +104,20 @@ setup() {
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "F7:"
 }
+
+@test "verifier exits non-zero when SKILL.md weakens the non-mutating-path behavior text" {
+  # F7 behavioral anchors: the section heading can survive while the
+  # warn-and-continue behavior is weakened back to a halt. Strip only a
+  # behavior phrase ("Do NOT halt"), leaving the structural anchors intact,
+  # and confirm F7 still catches it — guards the false negative a reviewer
+  # reproduced (issue #26).
+  scratch=$(mktemp -d)
+  cp -R "$REPO_ROOT/." "$scratch/"
+  cd "$scratch"
+  sed -e 's/Do NOT halt/halt with BLOCKED:mode-conflict/g' \
+      plugin/skills/cr/SKILL.md > plugin/skills/cr/SKILL.md.new
+  mv plugin/skills/cr/SKILL.md.new plugin/skills/cr/SKILL.md
+  run bash scripts/verify-prompt-contract.sh
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "F7:"
+}
