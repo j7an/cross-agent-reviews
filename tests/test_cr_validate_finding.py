@@ -16,10 +16,9 @@ def run(args, stdin=None):
     # repo-root `sitecustomize.py` runs in the subprocess and triggers
     # `coverage.process_startup()` (subprocess-coverage convention). We
     # pass the parent process env through (`{**os.environ, ...}`) so
-    # pytest-cov's COV_CORE_* / COVERAGE_PROCESS_START variables propagate
-    # to the subprocess; otherwise the script's main() body would not be
-    # measured under the --cov-fail-under=85 gate (see "Subprocess
-    # coverage" in Cross-cutting conventions). PATH is inherited from the
+    # coverage.py's subprocess startup config propagates to the subprocess;
+    # otherwise the script's main() body would not be measured under the
+    # --cov-fail-under=85 gate. PATH is inherited from the
     # parent so host-installed tools (`git`, `bats`) remain reachable;
     # pinning PATH to a fixed list would break on hosts where these
     # binaries live elsewhere (Homebrew on macOS, `uv`-managed

@@ -45,21 +45,18 @@ repos:
   - repo: local
     hooks:
       - id: pytest
-        name: pytest with coverage
-        # NOTE: --cov-fail-under intentionally omitted so the hook picks up
-        # the [tool.coverage.report] fail_under from pyproject.toml (currently
-        # 3, deferred from 85 — see pyproject.toml's TODO and commit 34725fc
-        # for rationale). Keep them aligned in one place rather than splitting
-        # the floor across CLI flag and config.
-        entry: uv run pytest --cov=plugin/skills/cr/_helpers tests/
+        name: pytest smoke
+        # Keep pre-push fast; CI runs the full coverage gate from pyproject.toml.
+        entry: uv run pytest tests/test_smoke.py tests/test_cr_lib.py tests/test_helper_invocation.py -q
         language: system
         always_run: true
         pass_filenames: false
         stages: [pre-push]
 
       - id: bats
-        name: bats
-        entry: bats tests/bats/
+        name: bats smoke
+        # Full Bats, including the slower prompt-contract verifier, runs in CI.
+        entry: uv run bats tests/bats/test_cr_wrapper.bats tests/bats/test_release_archive_config.bats tests/bats/test_version_bump_config.bats
         language: system
         always_run: true
         pass_filenames: false
