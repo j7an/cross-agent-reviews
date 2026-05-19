@@ -2,6 +2,15 @@
 
 Use when `state.<artifact_type>.current_stage == "round_2a_pending"`. Fresh-session preflight is REQUIRED.
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 1. Read the canonical slice plan and Round 1b output
 
 Read `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` for the frozen slice plan and `round-1b.json` for the accepted findings (each accepted finding's `agent_id` indicates which slice must verify it).
@@ -12,7 +21,14 @@ Do NOT redefine the slice plan and do NOT include `slice_plan` in the payload be
 
 ## 3. Pre-extraction step (cross-artifact slice only)
 
-If the cross-artifact slice is present and the artifact is the plan, re-run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>` against the corrected plan. The agent_id 6 sub-agent receives the new extractor report.
+If the cross-artifact slice is present and the artifact is the plan, re-run:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>
+```
+
+Run it against the corrected plan. The agent_id 6 sub-agent receives the new extractor report.
 
 ## 4. Dispatch with verification mission
 
@@ -55,7 +71,8 @@ Build:
 The agents array MUST contain one verification per accepted Round 1 finding (cardinality enforced by `cr_state_write.py`). Then:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script validates, writes `round-2a.json` to disk, and updates

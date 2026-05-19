@@ -7,7 +7,7 @@ and is fixed (`is_fixed: true`) across all three rounds.
 ## What you receive
 
 The round procedure has already invoked
-`"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <S> --plan-path <P>` and
+`"${CR_HELPER}" extract-placeholders --spec-path <S> --plan-path <P>` and
 captured its JSON output. That output is the **extractor report** — the
 mechanical part of the slice. It enumerates:
 
@@ -66,7 +66,7 @@ Per-finding `Finding` records following the canonical shape:
   "location": "plan §X line Y (corresponds to spec §A line B)",
   "severity": "blocker",
   "finding": "Plan substitutes hallucinated literal '12345678' for spec placeholder '<numeric-id>'",
-  "why_it_matters": "An implementer would commit a fabricated UID to production; CLAUDE.md rule and prior misattribution incident attest to the risk",
+  "why_it_matters": "An implementer would commit a fabricated UID to production; the project instruction rule and prior misattribution incident attest to the risk",
   "suggested_direction": "Restore the placeholder OR cite a primary source for the substituted value OR flag as <unverified — needs lookup: ...>"
 }
 ```
@@ -77,7 +77,6 @@ fields plus `location` and `severity`.
 ## Why this matters
 
 The cross-artifact slice mechanically enforces the placeholder-substitution
-rule already documented in the operator's global CLAUDE.md ("Evidence and
-Verification" → "Placeholder substitution"). The rule's prior failure
-(GitHub UID hallucination causing commit-attribution misattribution) is
-the canonical bug this slice prevents.
+rule documented in project/operator agent instructions such as `AGENTS.md` or
+`CLAUDE.md`. The rule's prior failure (GitHub UID hallucination causing
+commit-attribution misattribution) is the canonical bug this slice prevents.

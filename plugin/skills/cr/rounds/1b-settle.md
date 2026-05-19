@@ -2,9 +2,25 @@
 
 Use when `state.<artifact_type>.current_stage == "round_1b_pending"`. Fresh-session preflight is NOT required.
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 1. Read the round-1a output
 
-`"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type>` (use the local file). The 1a findings are at `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` under `agents[].findings`.
+Run:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type>
+```
+
+Use the local file. The 1a findings are at `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` under `agents[].findings`.
 
 ## 2. Adjudicate every finding
 
@@ -35,7 +51,8 @@ For each finding, decide accept or reject. Capture:
 ## 4. Write
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script computes `accepted_findings`, `rejected_findings`,

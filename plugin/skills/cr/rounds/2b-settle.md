@@ -2,6 +2,15 @@
 
 Use when `state.<artifact_type>.current_stage == "round_2b_pending"`. Fresh-session preflight is NOT required.
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 1. Read Round 2a verifications and new findings
 
 `.cross-agent-reviews/<slug>/<artifact_type>/round-2a.json` contains:
@@ -39,5 +48,6 @@ Only the `findings` array of Round 2a's agents enters the adjudication. For each
 ## 5. Write
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```

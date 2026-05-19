@@ -2,13 +2,29 @@
 
 Use when `state.<artifact_type>.current_stage == "round_3a_pending"`. Fresh-session preflight is REQUIRED.
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 1. Reuse the canonical slice plan
 
 Same as Round 2a; do NOT include `slice_plan` in the payload below — `cr_state_write.py` sources it from `round-1a.json` and enforces equality.
 
 ## 2. Pre-extraction step (cross-artifact slice only)
 
-If the cross-artifact slice is present and the artifact is the plan, re-run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>` once more against the now-final plan.
+If the cross-artifact slice is present and the artifact is the plan, re-run:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>
+```
+
+Run it once more against the now-final plan.
 
 ## 3. Dispatch with strict-blocker mission
 
@@ -43,5 +59,6 @@ Build:
 Then:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```

@@ -11,6 +11,15 @@ Execute [_shared/preflight.md](../_shared/preflight.md) before anything else,
 exactly as the audit rounds do. `3c` independently verifies the 3b author's
 corrections; a carried-over session defeats that.
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 2. Read the inputs
 
 - `.cross-agent-reviews/<slug>/<artifact_type>/round-3b.json` — its
@@ -56,7 +65,8 @@ regression findings — the writer mints `R3C-NNN`.
 ## 6. Write
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The writer derives `result`:
