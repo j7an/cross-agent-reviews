@@ -2,6 +2,15 @@
 
 Use this procedure when `state.<artifact_type>.current_stage == "round_1a_pending"`. Fresh-session preflight already passed (the router checked).
 
+## Helper setup
+
+Before any shell tool call in this round that invokes a helper, define
+`CR_HELPER` in that same shell tool call:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+```
+
 ## 1. Capture artifact context
 
 The router has already determined `slug`, `artifact_path`, and
@@ -41,7 +50,8 @@ for the cross-artifact slice when present).
 If a 6th cross-artifact slice is present, run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" extract-placeholders --spec-path <SPEC> --plan-path <PLAN>
 ```
 
 Capture the JSON output. The agent_id 6 sub-agent receives this as primary
@@ -89,7 +99,8 @@ Collect each sub-agent's status report. Build a JSON payload:
 Save the payload to a temp file and run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <tmp-payload.json>
 ```
 
 The script validates, writes `round-1a.json` to disk, and updates

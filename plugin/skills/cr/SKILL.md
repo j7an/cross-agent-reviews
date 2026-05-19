@@ -5,12 +5,32 @@ description: State-driven cross-agent spec/plan review pipeline. Use `/cr` to ad
 
 [Full attribution](_shared/attribution.md)
 
+## Helper invocation contract
+
+`CR_HELPER` is the executable helper wrapper adjacent to this skill:
+`plugin/skills/cr/_helpers/cr` in the installed plugin tree. Resolve the
+currently loaded `cr` skill directory from the host-provided skill location
+(the directory containing this `SKILL.md`). If the host does not expose that
+path, ask the operator for the installed `cr` `SKILL.md` path and derive the
+directory from it.
+
+Before every shell tool call that invokes a helper, define `CR_HELPER` in that
+same shell tool call, then invoke helpers as `"${CR_HELPER}" <subcommand> ...`:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-pick-slug
+```
+
+Do not use host-specific plugin-root environment variables in shared prompt
+material. Do not rely on `export CR_HELPER` persisting across shell tool calls.
+
 ## 0. Determine intent and target slug
 
 Operator's input is one of:
 
-- **No input** — advance the active pipeline. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug` to pick the slug.
-- **Artifact path** (e.g., `docs/specs/foo-design.md`) — start a new review or augment an existing slug. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug --input <path>`.
+- **No input** — advance the active pipeline. Run `"${CR_HELPER}" state-pick-slug` to pick the slug.
+- **Artifact path** (e.g., `docs/specs/foo-design.md`) — start a new review or augment an existing slug. Run `"${CR_HELPER}" state-pick-slug --input <path>`.
 - **Mode/profile tokens** — when the operator's input includes the reserved
   standalone tokens `fast`/`thorough` or `patch`/`feature`/`greenfield`
   alongside an artifact path or slug (e.g. `/cr docs/specs/foo-design.md fast
@@ -23,13 +43,13 @@ Operator's input is one of:
   is genuinely named `fast` (etc.) must pass an unambiguous path form such as
   `./fast`, which routes as a path.
 - **Outbound cross-host cue + artifact path** (an artifact path combined with "review on a different host", "this is for host B" / "for the other host", "init only" / "bootstrap only" / "export bootstrap", or "I'll continue on another host") — Host A side of the paste handshake. Initialize state locally and stop after emitting the bootstrap payload for the operator to carry to Host B. See §1.5 below; do NOT proceed to §2 or §4.
-- **Slug name** — explicit slug. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug --input <slug>`.
+- **Slug name** — explicit slug. Run `"${CR_HELPER}" state-pick-slug --input <slug>`.
 - **Inbound cross-host paste cue** (a cross-host cue with NO artifact path, OR "I just ran round Na on host A", "import this round", "here is the paste") — Host B side: enter paste-import mode. See §3 below. (The disambiguator vs. the outbound branch is the presence of an artifact path: with a path the operator is starting a review and exporting it; without a path the operator is receiving someone else's paste.)
-- **Status query** ("show status", `/cr status`) — run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-status [--slug <slug>]` and present its output.
+- **Status query** ("show status", `/cr status`) — run `"${CR_HELPER}" state-status [--slug <slug>]` and present its output.
 
 If `cr_state_pick_slug.py` returns `{"action": "ask_for_artifact_path"}`, ask the operator for the artifact path or a `state.json` paste, then re-run.
 
-If `cr_state_pick_slug.py` returns `{"default": <slug>, "alternatives": [<slug>, ...]}` (two or more active slugs), surface the disambiguation to the operator: list `<default>` first (most recent activity, with any `pending_import` slug surfaced ahead of recency per Phase 7) and the alternatives below it, then ask which slug to advance. After the operator answers, re-invoke `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-pick-slug --input <chosen-slug>` to obtain `{"slug": <chosen-slug>, "artifact_type": <spec|plan>}` (the picker derives `artifact_type` from the latest block in `state.json` for slug-name input — see Phase 7). Use the result for §1 / §2; never proceed without `artifact_type` because §1's `cr_state_init.py` and §2's `cr_state_read.py` both require it.
+If `cr_state_pick_slug.py` returns `{"default": <slug>, "alternatives": [<slug>, ...]}` (two or more active slugs), surface the disambiguation to the operator: list `<default>` first (most recent activity, with any `pending_import` slug surfaced ahead of recency per Phase 7) and the alternatives below it, then ask which slug to advance. After the operator answers, re-invoke `"${CR_HELPER}" state-pick-slug --input <chosen-slug>` to obtain `{"slug": <chosen-slug>, "artifact_type": <spec|plan>}` (the picker derives `artifact_type` from the latest block in `state.json` for slug-name input — see Phase 7). Use the result for §1 / §2; never proceed without `artifact_type` because §1's `cr_state_init.py` and §2's `cr_state_read.py` both require it.
 
 ## 1. Initialize state if needed
 
@@ -39,7 +59,7 @@ Run `cr_state_init.py` when **either** of these holds:
 - the state file exists but its `state.<artifact_type>` block is absent (e.g., a completed spec review is being augmented with a plan, or a `restart` resolution from §2's spec-drift table is replacing the prior plan block under the same slug).
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan>
+"${CR_HELPER}" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan>
 ```
 
 When `cr_state_pick_slug.py` returned `mode` and/or `review_profile`, pass
@@ -60,7 +80,7 @@ Take this branch only when §0 classified the input as **outbound cross-host cue
 Run init with the gitignore prompt suppressed — the operator only wants the bootstrap JSON, not an interactive `[y/N]` confirmation:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan> --no-gitignore-prompt
+"${CR_HELPER}" state-init --artifact-path <ARTIFACT_PATH> --artifact-type <spec|plan> --no-gitignore-prompt
 ```
 
 When `cr_state_pick_slug.py` returned `mode` and/or `review_profile`, append
@@ -86,7 +106,7 @@ After emitting the message, **stop**. Do NOT proceed to §2 (read state) or §4 
 Read state:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <spec|plan>
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <spec|plan>
 ```
 
 Parse the JSON output. The next stage is `state.<artifact_type>.current_stage` minus the `round_` prefix and `_pending` suffix.
@@ -96,8 +116,8 @@ If `integrity == "STATE_INTEGRITY_ERROR"`, halt with `BLOCKED:state-integrity` a
 **Mode/profile tokens on non-mutating paths.** The `pending_import` and `ready_for_implementation` branches below are *non-mutating continuations* — they sync state or report status, and neither re-runs init, so a post-init mode/profile token cannot change the locked contract there. When `cr_state_pick_slug.py` returned a `mode` or `review_profile` token and the next step is one of those two branches, reconcile the token **non-fatally** before continuing:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
 ```
 
 - **Zero exit** — the token matches the locked value; continue silently, no notice.
@@ -126,15 +146,15 @@ A rerun of `/cr` after completion is a status query, not a new dispatch.
 For **plan rounds only**, run a spec-drift check before dispatch:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --check-spec-drift
+"${CR_HELPER}" state-read --slug <slug> --check-spec-drift
 ```
 
 Exit code 2 with `SPEC_DRIFT_DETECTED` on stderr means the spec file changed on disk vs. `state.plan.spec_hash_at_start`. Surface the three options from §7.8 of the design and translate the operator's choice into a scripted action; do not dispatch any sub-agent until drift is resolved.
 
 | Operator choice | Router action |
 |---|---|
-| `restart` (re-init the plan against the current spec) | `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --resolve-drift restart`. Then prompt the operator for the plan path and re-enter §1 to re-init the plan block under the same slug. |
-| `accept-drift` (assert the plan still matches the new spec) | `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --resolve-drift accept`. The script atomically refreshes `state.plan.spec_hash_at_start` to the current hash. Re-enter §2 with the new state. |
+| `restart` (re-init the plan against the current spec) | `"${CR_HELPER}" state-read --slug <slug> --resolve-drift restart`. Then prompt the operator for the plan path and re-enter §1 to re-init the plan block under the same slug. |
+| `accept-drift` (assert the plan still matches the new spec) | `"${CR_HELPER}" state-read --slug <slug> --resolve-drift accept`. The script atomically refreshes `state.plan.spec_hash_at_start` to the current hash. Re-enter §2 with the new state. |
 | `abort` (resolve out of band) | Halt with `BLOCKED:spec-drift` and surface the diagnostic. The operator decides what to do; rerunning `/cr` after manual edits resumes the pipeline. |
 
 **Mode/profile conflict check.** When `cr_state_pick_slug.py` returned a
@@ -143,8 +163,8 @@ Exit code 2 with `SPEC_DRIFT_DETECTED` on stderr means the spec file changed on 
 dispatch:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> --assert-mode <value>
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> --assert-profile <value>
 ```
 
 A zero exit means the token matches the locked value (a no-op). A non-zero
@@ -162,7 +182,7 @@ If the operator's cue indicates a cross-host transition or local-only signal #2 
 2. Determine the slug:
    - **Continuing host** (local state for this slug already exists, e.g., signal #2): use the slug already in scope from §0.
    - **Fresh host** (no local `.cross-agent-reviews/<slug>/` for any candidate slug): parse the pasted JSON's top-level `slug` field and use it. Bootstrap (`state.json`) and round payloads both carry `slug` per their schemas, so this is deterministic. If the parse fails or `slug` is missing, halt with a diagnostic and ask the operator to repaste.
-3. Run `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-read --paste --slug <slug>`, with the pasted JSON on stdin.
+3. Run `"${CR_HELPER}" state-read --paste --slug <slug>`, with the pasted JSON on stdin.
 4. The script auto-detects bootstrap (`state.json`) vs round (`round-<stage>.json`) shape. Bootstrap: refuses to clobber an existing local `state.json` for the slug (§10.3). Round: enforces schema, identity (`slug`, `artifact_type`, `artifact_path`), and round-order (pasted `stage` matches the next-expected stage per local state, with the pending-import override).
 5. Exit code 0: paste accepted. Inform the operator and re-enter §2 to determine the new next round.
 6. Exit code 1 with a diagnostic: surface to the operator (e.g., `stage mismatch`, `slug mismatch`, `clobber refused`).
@@ -175,7 +195,7 @@ Map the derived stage token to its round file by suffix — audit rounds (`1a`, 
 - Dispatches per-slice sub-agents using the parameterized
   [`_shared/dispatch-template.md`](_shared/dispatch-template.md).
 - Aggregates sub-agent reports into a structured payload.
-- Calls `"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <payload-file>` to persist.
+- Calls `"${CR_HELPER}" state-write --slug <slug> --artifact-type <type> --artifact-path <path> --input <payload-file>` to persist.
 
 The script validates schema + cross-round invariants, atomically writes
 `round-<stage>.json` + updates `state.json`, and emits byte-identical JSON
@@ -240,7 +260,7 @@ operator (per §9.2 of the spec):
 If the operator asks for a status view (`/cr status`, "show status", "what round are we on?"), run:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-status [--slug <slug>]
+"${CR_HELPER}" state-status [--slug <slug>]
 ```
 
 Present its output verbatim.

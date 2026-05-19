@@ -15,7 +15,7 @@ This plugin's pipeline architecture is an adaptation of two skills from the
 - **superpowers:dispatching-parallel-agents** — the parallel-dispatch decision pattern (when to parallelize, focused-scope rules, common mistakes) informs the slice-plan design used by reviewer rounds 1a/2a/3a.
 - **superpowers:subagent-driven-development** — the model-tier rubric (most capable / standard / fast), status protocol (`DONE` / `DONE_WITH_CONCERNS` / `BLOCKED` / `NEEDS_CONTEXT`), and implementer-prompt template shape are adopted verbatim with role-name adaptation.
 
-Reference version: **5.0.7** (as installed in `~/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.7/`).
+Reference version: **5.0.7** from the upstream Superpowers plugin.
 
 The reviewer-round status labels (`findings_found` / `clean` / `blocked` / `needs_context`) are review-specific adaptations; author rounds (1b/2b/3b) retain the original Superpowers uppercase labels.
 

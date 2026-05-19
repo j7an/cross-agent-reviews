@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2010,SC2015,SC2016
+# shellcheck disable=SC2010,SC2015,SC2016,SC2088
 # Dev-time prompt-content static check for the v0.1.x state-driven layout.
 #
 # Phase 11.2 deleted the v0.1.0 six-skill layout and tightened this verifier
@@ -32,6 +32,46 @@ check_not_contains() {
     printf 'FAIL: %s (%s)\n' "$description" "$file"
     failures=$((failures + 1))
   fi
+}
+
+check_not_matches() {
+  local file="$1"; local pattern="$2"; local description="$3"
+  set +e
+  rg -q "$pattern" "$file" 2>/dev/null
+  local rc=$?
+  set -e
+  case "$rc" in
+    0)
+      printf 'FAIL: %s (%s)\n' "$description" "$file"
+      failures=$((failures + 1))
+      ;;
+    1)
+      ;;
+    *)
+      printf 'FAIL: %s scan errored (rg exit %s; %s)\n' "$description" "$rc" "$file"
+      failures=$((failures + 1))
+      ;;
+  esac
+}
+
+check_tree_not_contains() {
+  local path="$1"; local pattern="$2"; local description="$3"
+  set +e
+  rg -q --fixed-strings "$pattern" "$path" 2>/dev/null
+  local rc=$?
+  set -e
+  case "$rc" in
+    0)
+      printf 'FAIL: %s (%s)\n' "$description" "$path"
+      failures=$((failures + 1))
+      ;;
+    1)
+      ;;
+    *)
+      printf 'FAIL: %s scan errored (rg exit %s; %s)\n' "$description" "$rc" "$path"
+      failures=$((failures + 1))
+      ;;
+  esac
 }
 
 check_file_exists() {
@@ -226,8 +266,10 @@ check_contains plugin/skills/cr/SKILL.md "Outbound cross-host bootstrap" \
 check_contains plugin/skills/cr/SKILL.md "Bootstrap state.json for Host B" \
   "F4: SKILL.md includes operator copy instructions for bootstrap payload"
 
-# F5: SKILL.md, rounds/*.md, and _shared/*.md must invoke helpers via the
-# uv-backed wrapper (`.../skills/cr/_helpers/cr <subcommand>`), not the
+# F5: SKILL.md, rounds/*.md, and _shared/*.md must invoke helpers through
+# the host-neutral CR_HELPER contract. The contract must define CR_HELPER
+# inside the same shell tool call as each helper invocation and resolve it to
+# the uv-backed wrapper (`.../skills/cr/_helpers/cr <subcommand>`), not the
 # legacy `python .../skills/cr/_helpers/cr_X.py` form. The legacy form
 # breaks on real operator machines where `python` resolves to 3.10 (so
 # `from datetime import UTC` ImportErrors before argparse runs) or
@@ -236,16 +278,26 @@ check_contains plugin/skills/cr/SKILL.md "Bootstrap state.json for Host B" \
 # is the only form documented for operators.
 #
 # Sub-assertions:
-#   F5a: SKILL.md includes the wrapper-form invocation prefix.
+#   F5a: SKILL.md includes the CR_HELPER same-shell assignment and
+#        wrapper-form invocation prefix.
 #   F5b: SKILL.md / rounds/ / _shared/ do NOT include the legacy
-#        `python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_` prefix.
+#        raw-python helper prefix.
 #   F5c: The wrapper script exists and is executable.
+cr_helper_setup='CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"'
+raw_python_helper_pattern="(^|[[:space:]])python[0-9.]*[[:space:]]+['\"]?[^[:space:]'\"]*/_helpers/cr_[^[:space:]'\"]*\\.py['\"]?"
+
 check_contains plugin/skills/cr/SKILL.md \
-  '"${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr" state-' \
-  "F5a: SKILL.md uses wrapper-form helper invocation"
-check_not_contains plugin/skills/cr/SKILL.md \
-  'python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_' \
-  "F5b: SKILL.md does not invoke helpers via raw 'python' (legacy form)"
+  "$cr_helper_setup" \
+  "F5a: SKILL.md defines CR_HELPER in the same shell tool call"
+check_contains plugin/skills/cr/SKILL.md \
+  'same shell tool call' \
+  "F5a: SKILL.md defines CR_HELPER in the same shell tool call"
+check_contains plugin/skills/cr/SKILL.md \
+  '"${CR_HELPER}" state-' \
+  "F5a: SKILL.md uses CR_HELPER wrapper-form helper invocation"
+check_not_matches plugin/skills/cr/SKILL.md \
+  "$raw_python_helper_pattern" \
+  "F5b: SKILL.md does not invoke CR helper scripts via raw python"
 check_file_exists plugin/skills/cr/_helpers/cr "F5c: cr wrapper script exists"
 if [[ -e plugin/skills/cr/_helpers/cr && ! -x plugin/skills/cr/_helpers/cr ]]; then
   printf 'FAIL: F5c: cr wrapper exists but is not executable\n'
@@ -257,10 +309,36 @@ fi
 # gate. Globs expand to absolute-relative paths; check_not_contains
 # accepts those directly.
 for f in plugin/skills/cr/rounds/*.md plugin/skills/cr/_shared/*.md; do
-  check_not_contains "$f" \
-    'python "${CLAUDE_PLUGIN_ROOT}/skills/cr/_helpers/cr_' \
-    "F5b: $f does not invoke helpers via raw 'python' (legacy form)"
+  check_not_matches "$f" \
+    "$raw_python_helper_pattern" \
+    "F5b: $f does not invoke CR helper scripts via raw python"
 done
+
+for f in plugin/skills/cr/rounds/*.md; do
+  check_contains "$f" \
+    "$cr_helper_setup" \
+    "F5a: $f defines CR_HELPER before helper calls"
+done
+
+# F8: Shared skill prompts are host-neutral. They may mention supported hosts
+# in compatibility prose, but must not encode host-specific execution roots,
+# installed cache paths, or a host-specific instruction file as the generic
+# source of operator policy.
+check_tree_not_contains plugin/skills/cr \
+  'CLAUDE_PLUGIN_ROOT' \
+  "F8: shared CR prompts do not use Claude-specific plugin root variables"
+check_tree_not_contains plugin/skills/cr \
+  '~/.claude' \
+  "F8: shared CR prompts do not cite Claude-specific installed cache paths"
+check_tree_not_contains plugin/skills/cr \
+  '$HOME/.claude' \
+  "F8: shared CR prompts do not cite Claude-specific HOME cache paths"
+check_tree_not_contains plugin/skills/cr \
+  'CODEX_PLUGIN_ROOT' \
+  "F8: shared CR prompts do not use Codex-specific plugin root variables"
+check_tree_not_contains plugin/skills/cr \
+  'global CLAUDE.md' \
+  "F8: shared CR prompts do not treat CLAUDE.md as the generic policy source"
 
 # F6: Fresh-session preflight applies to audit rounds only. The router must
 # send audit rounds through preflight and skip settle rounds, the shared
