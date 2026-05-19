@@ -33,7 +33,7 @@ The first commit MUST introduce the test file; the second commit MUST introduce 
 
 ## Coverage floor
 
-Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `3`, deferred from `85` until subprocess-coverage instrumentation is fixed — see the inline TODO in pyproject.toml). The pre-push hook (`.pre-commit-config.yaml`) does not pass `--cov-fail-under` on the CLI; it picks up the value from pyproject.toml so the gate has one source of truth. Restoring the 85% target is tracked separately.
+Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `85`). The pre-push hook (`.pre-commit-config.yaml`) does not pass `--cov-fail-under` on the CLI; it picks up the value from pyproject.toml so the gate has one source of truth.
 
 ## Type checking (Pyright)
 

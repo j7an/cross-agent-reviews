@@ -17,10 +17,10 @@ SCRIPT = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr_state_init.py
 def run(args, cwd, stdin=None, env=None):
     """Invoke the script in script mode (sys.path[0] = `_helpers/`).
 
-    Inherits `os.environ` so pytest-cov's COVERAGE_PROCESS_START reaches
-    the subprocess (cross-cutting subprocess-coverage convention). Setting
-    PYTHONPATH=REPO_ROOT lets `sitecustomize.py` (at the repo root) load
-    so `coverage.process_startup()` runs in each subprocess."""
+    Inherits `os.environ` so coverage.py's subprocess startup config reaches
+    the subprocess. Setting PYTHONPATH=REPO_ROOT lets `sitecustomize.py` (at
+    the repo root) load so `coverage.process_startup()` runs in each
+    subprocess."""
     full_env = {**os.environ, **(env or {})}
     full_env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
