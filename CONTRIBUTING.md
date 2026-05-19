@@ -33,7 +33,7 @@ The first commit MUST introduce the test file; the second commit MUST introduce 
 
 ## Coverage floor
 
-Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `85`). The pre-push hook (`.pre-commit-config.yaml`) does not pass `--cov-fail-under` on the CLI; it picks up the value from pyproject.toml so the gate has one source of truth.
+Python coverage gate is set by `[tool.coverage.report] fail_under` in `pyproject.toml` (currently `85`). CI runs `uv run pytest --cov=plugin/skills/cr/_helpers tests/` and picks up that value from pyproject.toml so the gate has one source of truth. The pre-push hook stays fast by running smoke subsets for pytest and Bats.
 
 ## Type checking (Pyright)
 
