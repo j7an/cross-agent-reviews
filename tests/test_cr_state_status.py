@@ -358,3 +358,205 @@ def test_status_marks_auto_settled_round(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "auto-settled" in result.stdout
     assert "clean 1a" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Task 10 — route-line rendering for fast-mode blocks
+# ---------------------------------------------------------------------------
+
+
+def _seed_route_workspace(
+    tmp_path,
+    *,
+    mode,
+    review_profile,
+    current_stage,
+    completed_rounds,
+    round_1a=None,
+    round_1b=None,
+):
+    """Seed a workspace with state.json + the supplied round envelopes under
+    slug 'foo'. Used by the route-line tests below."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews" / "foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True)
+    block = {
+        "path": "docs/specs/foo-design.md",
+        "content_hash": "sha256:" + "0" * 64,
+        "current_stage": current_stage,
+        "completed_rounds": completed_rounds,
+        "started_at": "2026-05-17T10:00:00Z",
+        "last_updated_at": "2026-05-17T10:05:00Z",
+    }
+    if mode is not None:
+        block["mode"] = mode
+    if review_profile is not None:
+        block["review_profile"] = review_profile
+    state = {"schema_version": 1, "slug": "foo", "spec": block}
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    if round_1a is not None:
+        (spec_dir / "round-1a.json").write_text(json.dumps(round_1a) + "\n")
+    if round_1b is not None:
+        (spec_dir / "round-1b.json").write_text(json.dumps(round_1b) + "\n")
+    return tmp_path
+
+
+def _narrow_round_1a():
+    return {
+        "stage": "1a",
+        "emitted_at": "2026-05-17T10:00:00Z",
+        "slice_plan": [
+            {"agent_id": 1, "is_fixed": False},
+            {"agent_id": 3, "is_fixed": False},
+            {"agent_id": 5, "is_fixed": False},
+        ],
+    }
+
+
+def _narrow_round_1b():
+    return {
+        "stage": "1b",
+        "emitted_at": "2026-05-17T10:05:00Z",
+        "accepted_findings": [{"id": "R1-1-001"}, {"id": "R1-3-001"}],
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "fix_criterion": "fix it",
+                "verification_target": "target",
+            },
+            {
+                "finding_id": "R1-3-001",
+                "verdict": "accept",
+                "fix_criterion": "fix it",
+                "verification_target": "target",
+            },
+        ],
+        "changelog": [
+            {"finding_id": "R1-1-001", "additional_affected_slices": []},
+            {"finding_id": "R1-3-001", "additional_affected_slices": []},
+        ],
+        "finding_lineage": [],
+    }
+
+
+def test_status_renders_narrow_route_line_for_fast_mode_block(tmp_path):
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="fast",
+        review_profile="patch",
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=_narrow_round_1a(),
+        round_1b=_narrow_round_1b(),
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(narrow: slices 1, 3, 5; mandatory: 5)" in result.stdout
+
+
+def test_status_renders_broad_route_line_with_fallback_reason(tmp_path):
+    """fast/patch with fix_criterion missing on the only accepted finding ->
+    F2-1 fallback. Compact one-clause expansion appears."""
+    r1a = _narrow_round_1a()
+    r1b = {
+        "stage": "1b",
+        "emitted_at": "2026-05-17T10:05:00Z",
+        "accepted_findings": [{"id": "R1-1-001"}],
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                # fix_criterion missing
+                "verification_target": "target",
+            },
+        ],
+        "changelog": [
+            {"finding_id": "R1-1-001", "additional_affected_slices": []},
+        ],
+        "finding_lineage": [],
+    }
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="fast",
+        review_profile="patch",
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=r1a,
+        round_1b=r1b,
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(broad: fallback — F2-1 missing fix_criterion on R1-1-001)" in result.stdout
+
+
+def test_status_thorough_mode_block_has_no_route_line(tmp_path):
+    """T36 byte-identical guarantee: thorough/unset mode blocks must NOT
+    have a route line appended."""
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="thorough",
+        review_profile="patch",
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=_narrow_round_1a(),
+        round_1b=_narrow_round_1b(),
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(narrow:" not in result.stdout
+    assert "(broad: fallback" not in result.stdout
+
+
+def test_status_route_line_only_when_prior_settle_complete(tmp_path):
+    """fast/patch but state is at round_1a_pending — no 1b on disk yet, so
+    the 2a row gets no route-line suffix."""
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="fast",
+        review_profile="patch",
+        current_stage="round_1a_pending",
+        completed_rounds=[],
+        round_1a=None,
+        round_1b=None,
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(narrow:" not in result.stdout
+    assert "(broad: fallback" not in result.stdout
+
+
+def test_status_legacy_block_has_no_route_line(tmp_path):
+    """Legacy block: no mode, no review_profile. Must not render a route
+    line even with 1a + 1b on disk."""
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode=None,
+        review_profile=None,
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=_narrow_round_1a(),
+        round_1b=_narrow_round_1b(),
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(narrow:" not in result.stdout
+    assert "(broad: fallback" not in result.stdout
+
+
+def test_status_fast_mode_with_absent_review_profile_renders_f2_4_line(tmp_path):
+    """mode == 'fast' but review_profile unset. Status output for the 2a row
+    contains the F2-4 compact expansion from the static map."""
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="fast",
+        review_profile=None,
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=_narrow_round_1a(),
+        round_1b=_narrow_round_1b(),
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(broad: fallback — F2-4 review_profile unset (legacy))" in result.stdout
