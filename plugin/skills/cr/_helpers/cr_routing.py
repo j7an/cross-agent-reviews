@@ -48,3 +48,92 @@ def identify_mandatory_slices(slice_plan: list[dict]) -> dict:
     non_fixed = [s["agent_id"] for s in slice_plan if not s.get("is_fixed")]
     global_coh = max(non_fixed) if non_fixed else None
     return {"global_coherence_slice": global_coh, "cross_artifact_slice": cross}
+
+
+def _broad(plan, reasons):
+    """Build a broad RouteDecision over every slice in plan."""
+    return RouteDecision(
+        scope="broad",
+        selected_slices=tuple(sorted(s["agent_id"] for s in plan)),
+        fallback_reasons=tuple(sorted(set(reasons))),
+    )
+
+
+def decide_2a(block: dict, round_1a: dict, round_1b: dict) -> RouteDecision:
+    """Decide the 2a scope for a single artifact block.
+
+    `block` is state[artifact_type] (the per-artifact block, not the full
+    state). `round_1a` is the canonical round-1a envelope (used for
+    slice_plan). `round_1b` is the canonical round-1b envelope (used for
+    adjudications + changelog + accepted_findings).
+    """
+    slice_plan = round_1a["slice_plan"]
+    # Multiple is_fixed=True slices means state is structurally invalid; per
+    # spec §4.3 we refuse the decision (the schema already enforces a single
+    # cross-artifact slice; this propagation is defence-in-depth that the
+    # writer treats as a hard refusal). Let the ValueError propagate to the
+    # caller.
+    mandatory = identify_mandatory_slices(slice_plan)
+
+    reasons: list[str] = []
+    mode = block.get("mode")
+    profile = block.get("review_profile")
+    if profile is None:
+        reasons.append("F2-4")
+    elif profile == "greenfield":
+        reasons.append("F2-5")
+    if mode != "fast":
+        reasons.append("F2-6")
+    if mandatory["global_coherence_slice"] is None:
+        reasons.append("F2-7")
+
+    # Author-field completeness — apply even if the profile already disqualified
+    # the route, so `--verbose` can surface every reason.
+    accepted_ids = {f["id"] for f in round_1b.get("accepted_findings", [])}
+    for adj in round_1b.get("adjudications", []):
+        if adj.get("verdict") != "accept":
+            continue
+        if not adj.get("fix_criterion") or not adj.get("verification_target"):
+            reasons.append("F2-1")
+            break
+    for entry in round_1b.get("changelog", []):
+        if entry["finding_id"] not in accepted_ids:
+            continue
+        if "additional_affected_slices" not in entry:
+            reasons.append("F2-2")
+            break
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    for entry in round_1b.get("changelog", []):
+        if entry["finding_id"] not in accepted_ids:
+            continue
+        for aid in entry.get("additional_affected_slices", []):
+            if aid not in valid_agent_ids:
+                reasons.append("F2-3")
+                break
+        if "F2-3" in reasons:
+            break
+
+    if reasons:
+        return _broad(slice_plan, reasons)
+
+    selected: set[int] = set()
+    # Origin slices from accepted findings (id format R1-<agent_id>-NNN).
+    for fid in accepted_ids:
+        selected.add(int(fid.split("-")[1]))
+    # Author-declared cross-slice impacts.
+    for entry in round_1b.get("changelog", []):
+        if entry["finding_id"] not in accepted_ids:
+            continue
+        selected.update(entry.get("additional_affected_slices", []))
+    # F2-7 above ensures global_coherence_slice is not None on the narrow path.
+    global_coh = mandatory["global_coherence_slice"]
+    assert global_coh is not None  # noqa: S101 - narrows type; invariant from F2-7
+    selected.add(global_coh)
+    if mandatory["cross_artifact_slice"] is not None:
+        selected.add(mandatory["cross_artifact_slice"])
+
+    return RouteDecision(
+        scope="narrow",
+        selected_slices=tuple(sorted(selected)),
+        fallback_reasons=(),
+    )
