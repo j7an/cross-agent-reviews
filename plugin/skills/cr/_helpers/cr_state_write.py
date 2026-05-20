@@ -238,13 +238,81 @@ def _build_lineage_row_1b(
     )
 
 
-def _build_lineage_2b(*args, **kwargs) -> list[dict]:
-    """Placeholder for the 2b lineage builder. Implemented in Task 6 of the
-    issue #22 plan; until then the writer emits an empty list for 2b so the
-    schema gate (which forbids `finding_lineage` only in 3b) stays satisfied
-    and Task 6 has a single call site to replace.
+def _build_lineage_2b(
+    payload: dict,
+    paired_audit: dict,
+    prior_settle: dict | None,
+    audit_findings_by_id: dict[str, dict],
+    adjudication_by_id: dict[str, dict],
+    changelog_by_id: dict[str, dict],
+    slice_plan: list[dict],
+    valid_agent_ids: set[int],
+    accepted_finding_ids: list[str],
+) -> list[dict]:
+    """2b finding_lineage = carry-forward 1b rows + fresh rows per accepted 2a
+    finding.
+
+    Carry-forward: clone each 1b row, mint a new lineage_id (`L-2b-...`), set
+    `prior_lineage_id` to the 1b row's id, populate `latest_verification` from
+    the matching 2a `round_1_verifications` entry. If 2a has no matching
+    verification, omit the row and emit `LINEAGE_INCOMPLETE: <fid>: missing
+    2a verification` on stderr (defensive — normally a 2a author oversight
+    that should have been caught by the 2a cross-round check, but we degrade
+    gracefully rather than crashing the settle).
+
+    Fresh rows: one per accepted 2a finding whose author fields are complete.
+    Each is built exactly like a 1b row (`_build_lineage_row_1b`), except
+    `originating_stage = "2a"`, `lineage_id` starts with `L-2b-`, and
+    `prior_lineage_id`/`latest_verification` are both null.
     """
-    return []
+    lineage: list[dict] = []
+
+    # 1) Carry-forward — every 1b lineage row becomes a 2b row, with
+    #    latest_verification populated from the paired 2a verifications.
+    prior_lineage = (prior_settle or {}).get("finding_lineage", []) or []
+    verifications_by_fid: dict[str, dict] = {}
+    for agent in paired_audit["agents"]:
+        for v in agent.get("round_1_verifications", []):
+            verifications_by_fid[v["round_1_finding_id"]] = v
+    for row in prior_lineage:
+        fid = row["original_finding_id"]
+        v = verifications_by_fid.get(fid)
+        if v is None:
+            # 2a normally produces one verification per accepted 1b finding
+            # (enforced by `_cross_round_check_2a`), so a miss here means the
+            # 1b lineage went out of sync with 2a — most often because the
+            # 1b file was hand-edited or paste-imported separately. Surface
+            # it loudly and skip rather than emitting a partial carry-forward
+            # row.
+            print(f"LINEAGE_INCOMPLETE: {fid}: missing 2a verification", file=sys.stderr)
+            continue
+        new_row = dict(row)
+        new_row["lineage_id"] = row["lineage_id"].replace("L-1b-", "L-2b-", 1)
+        new_row["prior_lineage_id"] = row["lineage_id"]
+        new_row["latest_verification"] = {"status": v["status"], "evidence": v["evidence"]}
+        lineage.append(new_row)
+
+    # 2) Fresh rows — one per accepted 2a finding. Reuses the same
+    #    completeness checks as the 1b builder; an accepted 2a finding with
+    #    missing author fields is omitted with a LINEAGE_INCOMPLETE marker
+    #    rather than blocking the settle (spec §3.3 best-effort contract).
+    for fid in accepted_finding_ids:
+        row, reason = _build_lineage_row_1b(
+            fid,
+            audit_findings_by_id,
+            adjudication_by_id,
+            changelog_by_id,
+            slice_plan,
+            valid_agent_ids,
+        )
+        if row is None:
+            print(f"LINEAGE_INCOMPLETE: {reason}", file=sys.stderr)
+            continue
+        row["lineage_id"] = f"L-2b-{fid}"
+        row["originating_stage"] = "2a"
+        lineage.append(row)
+
+    return lineage
 
 
 def _build_settle_envelope(
@@ -624,13 +692,21 @@ def _auto_settle(
         "self_review": [],
     }
     block = state[artifact_type]
+    # For a 2a→2b auto-settle the prior settle (round-1b.json) is the source
+    # of carry-forward lineage rows. Without this read, the auto-settled 2b
+    # would silently drop every 1b lineage row, breaking the spec §3.3
+    # contract that every accepted finding carries forward until it lands in
+    # the final-verification envelope. (1a→1b never has a prior settle.)
+    prior_settle = None
+    if settle_stage == "2b":
+        prior_settle = _read_optional(artifact_dir / "round-1b.json")
     envelope = _build_settle_envelope(
         slug,
         artifact_type,
         artifact_path,
         payload,
         audit_envelope,
-        None,
+        prior_settle,
         mode=block.get("mode"),
         review_profile=block.get("review_profile"),
     )
@@ -778,7 +854,11 @@ def main() -> int:
         return 0
 
     paired_audit_path = {"1b": "1a", "2b": "2a", "3b": "3a"}.get(stage)
-    prior_settle_path = {"2a": "1b", "3a": "2b"}.get(stage)
+    # 2b needs round-1b.json so the carry-forward lineage builder can clone
+    # 1b rows and populate latest_verification from 2a's round_1_verifications
+    # (spec §3.3). Stage 2a/3a still need their own prior settle for cross-
+    # round invariant checks; 2b reads it only as a lineage source.
+    prior_settle_path = {"2a": "1b", "2b": "1b", "3a": "2b"}.get(stage)
     prior_audit_path = {"2a": "1a", "3a": "2a"}.get(stage)
 
     paired_audit = (
