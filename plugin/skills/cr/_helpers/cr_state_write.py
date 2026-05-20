@@ -29,6 +29,7 @@ from _cr_lib import (
     state_dir,
     validate_slug,
 )
+from cr_routing import decide_2a, decide_3a
 from jsonschema import Draft202012Validator
 
 STAGE_TO_ROUND = {"1a": 1, "1b": 1, "2a": 2, "2b": 2, "3a": 3, "3b": 3, "3c": 3}
@@ -139,7 +140,17 @@ def _assign_finding_ids(round_num: int, agents: list[dict]) -> None:
 
 
 def _build_audit_envelope(
-    slug: str, artifact_type: str, artifact_path: str, payload: dict, prior_audit: dict | None
+    slug: str,
+    artifact_type: str,
+    artifact_path: str,
+    payload: dict,
+    prior_audit: dict | None,
+    *,
+    block: dict | None = None,
+    round_1a: dict | None = None,
+    round_1b: dict | None = None,
+    round_2a: dict | None = None,
+    round_2b: dict | None = None,
 ) -> dict:
     stage = payload["stage"]
     round_num = STAGE_TO_ROUND[stage]
@@ -152,19 +163,70 @@ def _build_audit_envelope(
             )
         slice_plan = prior_audit["slice_plan"]
     agents = [dict(a) for a in payload["agents"]]
-    # Cross-array invariant: agent_ids must be unique AND match the
-    # slice_plan's agent_ids exactly. Without this check, duplicate or
-    # missing agent reports produce schema-valid envelopes whose finding
-    # IDs can collide (e.g., two agents both numbered 1 → both produce
-    # `R1-1-001` for distinct findings, which silently breaks downstream
-    # adjudication and verification matching).
+    # Cross-array invariant: agent_ids must be unique. For 2a / 3a the route
+    # decision (cr_routing) decides which slices the audit must cover —
+    # narrow under impact routing, broad (== full slice_plan) under any
+    # fallback condition (F2-*, F3-*) or legacy state. 1a keeps today's
+    # strict slice-plan match because the slice_plan is freshly authored
+    # there and `decide_2a` / `decide_3a` do not apply.
     expected_agent_ids = sorted(s["agent_id"] for s in slice_plan)
     actual_agent_ids = sorted(a["agent_id"] for a in agents)
-    if actual_agent_ids != expected_agent_ids:
-        raise ValueError(
-            "agent reports do not align with slice_plan: expected agent_ids "
-            f"{expected_agent_ids}, got {actual_agent_ids}"
-        )
+    if len(actual_agent_ids) != len(set(actual_agent_ids)):
+        # Duplicate agent_ids would let two agents share the same finding
+        # ID prefix (R{round}-{agent_id}-NNN), silently colliding downstream.
+        dupes = sorted({a for a in actual_agent_ids if actual_agent_ids.count(a) > 1})
+        raise ValueError(f"agent reports contain duplicate agent_id(s): {dupes}")
+    if stage in {"2a", "3a"} and block is not None:
+        if stage == "2a":
+            # For 2a, the caller passes `prior_audit == round_1a`. Accept the
+            # explicit `round_1a` kwarg too (it overrides) so callers built on
+            # top of `prior_audit` semantics don't have to thread a second
+            # name. The route function needs round_1a + round_1b.
+            r1a = round_1a if round_1a is not None else prior_audit
+            if r1a is None or round_1b is None:
+                # Keep the legacy diagnostic language so the existing
+                # "round 2a requires round-1b.json" regression test still
+                # matches; the route decision is gated by the same on-disk
+                # file as the long-standing 2a cross-round check.
+                raise ValueError(
+                    "round 2a requires round-1b.json (the prior round-1b settle "
+                    "file, source of the accepted findings 2a verifies) on disk"
+                )
+            decision = decide_2a(block, r1a, round_1b)
+        else:  # stage == "3a"
+            # For 3a, `prior_audit == round_2a`; `round_1a` must come in
+            # separately because `decide_3a` needs every prior envelope.
+            if round_1a is None or round_1b is None or round_2a is None or round_2b is None:
+                raise ValueError(
+                    "stage 3a route decision requires round-1a, round-1b, "
+                    "round-2a, and round-2b on disk"
+                )
+            decision = decide_3a(block, round_1a, round_1b, round_2a, round_2b)
+        expected = sorted(decision.selected_slices)
+        if actual_agent_ids != expected:
+            missing = sorted(set(expected) - set(actual_agent_ids))
+            extra = sorted(set(actual_agent_ids) - set(expected))
+            scope_label = decision.scope
+            reason_label = (
+                f" (fallback: {','.join(decision.fallback_reasons)})"
+                if decision.scope == "broad" and decision.fallback_reasons
+                else ""
+            )
+            raise ValueError(
+                f"Route decision is {scope_label} (slices {expected}{reason_label}); "
+                f"submission covers slices {actual_agent_ids}. Missing: {missing}. "
+                f"Extra: {extra}. Add or remove the named sub-agent entries to match "
+                "the route decision."
+            )
+    else:
+        # 1a or callers without route context — preserve today's strict
+        # slice-plan match. Without it, a malformed 1a author payload could
+        # ship a schema-valid envelope whose finding IDs collide.
+        if actual_agent_ids != expected_agent_ids:
+            raise ValueError(
+                "agent reports do not align with slice_plan: expected agent_ids "
+                f"{expected_agent_ids}, got {actual_agent_ids}"
+            )
     for a in agents:
         a.setdefault("round_1_verifications", [])
     _assign_finding_ids(round_num, agents)
@@ -877,10 +939,29 @@ def main() -> int:
         else None
     )
 
+    # Route-aware audit cardinality (issue #22, Task 8) needs every prior
+    # envelope that `cr_routing.decide_{2a,3a}` consumes. For stage 2a, the
+    # writer already loads round-1a as `prior_audit`; we just additionally
+    # load round-1b. For stage 3a, `prior_audit` is round-2a, so round-1a /
+    # round-1b / round-2b must all be loaded explicitly.
+    round_1a_env = _read_optional(artifact_dir / "round-1a.json") if stage == "3a" else None
+    round_1b_env = _read_optional(artifact_dir / "round-1b.json") if stage in {"2a", "3a"} else None
+    round_2a_env = _read_optional(artifact_dir / "round-2a.json") if stage == "3a" else None
+    round_2b_env = _read_optional(artifact_dir / "round-2b.json") if stage == "3a" else None
+
     try:
         if stage in AUDIT_STAGES:
             envelope = _build_audit_envelope(
-                args.slug, args.artifact_type, args.artifact_path, payload, prior_audit
+                args.slug,
+                args.artifact_type,
+                args.artifact_path,
+                payload,
+                prior_audit,
+                block=block,
+                round_1a=round_1a_env,
+                round_1b=round_1b_env,
+                round_2a=round_2a_env,
+                round_2b=round_2b_env,
             )
         else:
             if paired_audit is None:
