@@ -11,6 +11,21 @@ Before any shell tool call in this round that invokes a helper, define
 CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
 ```
 
+## 0. Pre-dispatch route decision
+
+Before dispatch, ask the writer-side router which slices to spawn:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> \
+    --route-decision --stage 3a
+```
+
+Read the `scope` and `selected_slices` fields. When `scope == "narrow"`, dispatch
+exactly the listed slices (each with its own sub-agent). When `scope == "broad"`,
+dispatch every slice in the frozen 1a slice plan. The dispatch payload changes
+shape under narrow routing — see §4 below.
+
 ## 1. Reuse the canonical slice plan
 
 Same as Round 2a; do NOT include `slice_plan` in the payload below — `cr_state_write.py` sources it from `round-1a.json` and enforces equality.
@@ -36,7 +51,7 @@ Apply the dispatch template with:
   > cannot proceed without resolution. Allowed severity: `blocker` only.
   > No gaps, no nits, no false_positive_check. Sub-agent status MUST be
   > `ship_ready` (zero findings) or `blocker_found` (≥1 blocker).
-- `${PRIOR_ROUND_FINDINGS_JSON}` = `[]` (3a does not re-verify; that was 2a's job).
+- `${PRIOR_ROUND_PAYLOAD_JSON}` = `[]` (3a does not re-verify; that was 2a's job).
 
 ## 4. Aggregate and write
 

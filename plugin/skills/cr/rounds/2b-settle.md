@@ -27,7 +27,17 @@ For each `round_1_verifications` entry whose `status != "resolved"`, decide whet
 Only the `findings` array of Round 2a's agents enters the adjudication. For each new finding:
 
 - Build an `Adjudication` `{finding_id, verdict: accept | reject, reasoning}`.
-- For accept: edit the artifact in place; add a `ChangelogEntry`.
+- For accept: edit the artifact in place; add a `ChangelogEntry`
+  `{finding_id, change_made, additional_affected_slices}`.
+  `additional_affected_slices` is an array of integer agent_ids for
+  cross-slice edits; explicit empty `[]` is allowed and is treated as
+  "no cross-slice impact". Absence triggers fallback reason `F2-2`.
+- For accept: additionally capture two strings on the adjudication record
+  in fast / profile-aware mode:
+  - `fix_criterion`: the criterion by which the fix should be judged.
+  - `verification_target`: the artifact location the verifier should re-read.
+  These fields are optional in legacy / thorough mode; their absence in fast
+  mode triggers fallback reason `F2-1` on the next route decision.
 - For reject: justify in `rejection_reason`.
 - Add a `SelfReviewEntry`.
 
@@ -44,6 +54,12 @@ Only the `findings` array of Round 2a's agents enters the adjudication. For each
 ```
 
 `cr_state_write.py` joins the adjudications with Round 2a's `findings` to compute `accepted_findings` and `rejected_findings`.
+
+> The writer derives `finding_lineage` from your Round 2 adjudications +
+> changelog when the artifact block is in **fast / profile-aware mode**
+> (`mode == 'fast'` AND `review_profile` set). You do not author this field
+> directly. In thorough mode, or in a fast block whose profile is unset,
+> `finding_lineage` is omitted entirely.
 
 ## 5. Write
 
