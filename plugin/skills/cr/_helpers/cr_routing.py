@@ -137,3 +137,100 @@ def decide_2a(block: dict, round_1a: dict, round_1b: dict) -> RouteDecision:
         selected_slices=tuple(sorted(selected)),
         fallback_reasons=(),
     )
+
+
+def decide_3a(
+    block: dict,
+    round_1a: dict,
+    round_1b: dict,
+    round_2a: dict,
+    round_2b: dict,
+) -> RouteDecision:
+    """Decide the 3a scope. Allowed only for `patch + fast` with no fallback;
+    otherwise broad."""
+    slice_plan = round_1a["slice_plan"]
+    # Same refusal contract as decide_2a (spec §4.3): a multiple-is_fixed
+    # slice_plan is invalid state, not a broad-fallback condition. Let
+    # ValueError propagate.
+    mandatory = identify_mandatory_slices(slice_plan)
+
+    reasons: list[str] = []
+
+    # F3-2: patch + fast gate.
+    if block.get("mode") != "fast" or block.get("review_profile") != "patch":
+        reasons.append("F3-2")
+    # F3-1 (mandatory-slice-undetectable variant): collapsed with F2-7 since
+    # this gate is structurally identical to decide_2a's, and surfaces under
+    # the F3-1 umbrella here.
+    if mandatory["global_coherence_slice"] is None:
+        reasons.append("F3-1")
+
+    # F3-1: F2-1..F2-3 / F2-7 applied to the 2b envelope.
+    accepted_2b_ids = {f["id"] for f in round_2b.get("accepted_findings", [])}
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    for adj in round_2b.get("adjudications", []):
+        if adj.get("verdict") != "accept":
+            continue
+        if not adj.get("fix_criterion") or not adj.get("verification_target"):
+            reasons.append("F3-1")
+            break
+    for entry in round_2b.get("changelog", []):
+        if entry["finding_id"] not in accepted_2b_ids:
+            continue
+        if "additional_affected_slices" not in entry:
+            reasons.append("F3-1")
+            break
+        bad = False
+        for aid in entry.get("additional_affected_slices", []):
+            if aid not in valid_agent_ids:
+                reasons.append("F3-1")
+                bad = True
+                break
+        if bad:
+            break
+
+    # F3-3: any 2a verification not fully resolved.
+    for agent in round_2a.get("agents", []):
+        triggered = False
+        for v in agent.get("round_1_verifications", []):
+            if v.get("status") in {"not_resolved", "partially_resolved"}:
+                reasons.append("F3-3")
+                triggered = True
+                break
+        if triggered:
+            break
+
+    # F3-4: any accepted 2a blocker.
+    for f in round_2b.get("accepted_findings", []):
+        if f.get("severity") == "blocker":
+            reasons.append("F3-4")
+            break
+
+    # F3-5: every accepted 1b lineage row must carry forward into 2b with
+    # latest_verification populated.
+    lineage_1b_ids = {row["lineage_id"] for row in round_1b.get("finding_lineage", [])}
+    lineage_2b = round_2b.get("finding_lineage", [])
+    carried_priors = {row.get("prior_lineage_id") for row in lineage_2b}
+    if lineage_1b_ids - carried_priors:
+        reasons.append("F3-5")
+    for row in lineage_2b:
+        if row.get("originating_stage") == "1a" and row.get("latest_verification") is None:
+            reasons.append("F3-5")
+            break
+
+    if reasons:
+        return _broad(slice_plan, reasons)
+
+    selected: set[int] = set()
+    for row in lineage_2b:
+        selected.update(row.get("affected_slices", []))
+    global_coh = mandatory["global_coherence_slice"]
+    assert global_coh is not None  # noqa: S101 - narrows type; invariant from F3-1 mandatory-slice check
+    selected.add(global_coh)
+    if mandatory["cross_artifact_slice"] is not None:
+        selected.add(mandatory["cross_artifact_slice"])
+    return RouteDecision(
+        scope="narrow",
+        selected_slices=tuple(sorted(selected)),
+        fallback_reasons=(),
+    )

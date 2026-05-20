@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
-from cr_routing import RouteDecision, decide_2a, identify_mandatory_slices
+from cr_routing import RouteDecision, decide_2a, decide_3a, identify_mandatory_slices
 
 
 def _slice_plan_spec():
@@ -278,3 +278,285 @@ def test_decide_2a_cross_artifact_slice_included_when_present():
     decision = decide_2a(state, _round_1a(plan), r1b)
     assert decision.scope == "narrow"
     assert decision.selected_slices == (1, 5, 6)  # origin + global-coh + cross-artifact
+
+
+def _round_2a(*, agents=None):
+    """Minimal 2a envelope. `agents` is a list of dicts with
+    agent_id + status + findings + round_1_verifications."""
+    return {"stage": "2a", "slice_plan": [], "agents": agents or []}
+
+
+def _round_2b(*, accepted=(), changelog=(), finding_lineage=()):
+    """2b envelope with optional finding_lineage."""
+    env = {
+        "stage": "2b",
+        "slice_plan": [],
+        "adjudications": [
+            {"finding_id": fid, "verdict": "accept", "reasoning": "ok", **extras}
+            for fid, extras in accepted
+        ],
+        "accepted_findings": [
+            {"id": fid, "severity": extras.get("_severity", "gap")} for fid, extras in accepted
+        ],
+        "rejected_findings": [],
+        "changelog": list(changelog),
+        "self_review": [],
+    }
+    if finding_lineage:
+        env["finding_lineage"] = list(finding_lineage)
+    return env
+
+
+def _lineage(
+    *,
+    lineage_id,
+    original_finding_id,
+    originating_agent_id,
+    affected_slices=(1,),
+    originating_stage="1a",
+    latest_verification=None,
+    prior_lineage_id=None,
+    fix_criterion="c",
+    verification_target="t",
+):
+    return {
+        "lineage_id": lineage_id,
+        "original_finding_id": original_finding_id,
+        "originating_stage": originating_stage,
+        "originating_agent_id": originating_agent_id,
+        "originating_slice": "x",
+        "affected_location": "y",
+        "affected_slices": list(affected_slices),
+        "fix_criterion": fix_criterion,
+        "verification_target": verification_target,
+        "prior_lineage_id": prior_lineage_id,
+        "latest_verification": latest_verification,
+    }
+
+
+def test_decide_3a_patch_fast_complete_lineage_narrow():
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r1a = _round_1a(plan)
+    r1b = _round_1b()
+    r2a = _round_2a(
+        agents=[
+            {
+                "agent_id": 1,
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [
+                    {"round_1_finding_id": "R1-1-001", "status": "resolved", "evidence": "x"}
+                ],
+            },
+        ]
+    )
+    lineage = [
+        _lineage(
+            lineage_id="L-2b-R1-1-001",
+            original_finding_id="R1-1-001",
+            originating_agent_id=1,
+            affected_slices=[1, 3],
+            latest_verification={"status": "resolved", "evidence": "x"},
+            prior_lineage_id="L-1b-R1-1-001",
+        ),
+    ]
+    r2b = _round_2b(finding_lineage=lineage)
+    decision = decide_3a(state, r1a, r1b, r2a, r2b)
+    assert decision.scope == "narrow"
+    assert decision.selected_slices == (1, 3, 5)
+
+
+def test_decide_3a_feature_fast_always_broad_F3_2():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="feature")["spec"]
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), _round_2b())
+    assert decision.scope == "broad"
+    assert "F3-2" in decision.fallback_reasons
+
+
+def test_decide_3a_patch_thorough_falls_back_F3_2():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="thorough", review_profile="patch")["spec"]
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), _round_2b())
+    assert decision.scope == "broad"
+    assert "F3-2" in decision.fallback_reasons
+
+
+def test_decide_3a_not_resolved_verification_falls_back_F3_3():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2a = _round_2a(
+        agents=[
+            {
+                "agent_id": 1,
+                "status": "issues_found",
+                "findings": [],
+                "round_1_verifications": [
+                    {"round_1_finding_id": "R1-1-001", "status": "not_resolved", "evidence": "x"}
+                ],
+            },
+        ]
+    )
+    lineage = [
+        _lineage(
+            lineage_id="L-2b-R1-1-001",
+            original_finding_id="R1-1-001",
+            originating_agent_id=1,
+            latest_verification={"status": "not_resolved", "evidence": "x"},
+            prior_lineage_id="L-1b-R1-1-001",
+        ),
+    ]
+    r2b = _round_2b(finding_lineage=lineage)
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), r2a, r2b)
+    assert decision.scope == "broad"
+    assert "F3-3" in decision.fallback_reasons
+
+
+def test_decide_3a_accepted_2a_blocker_falls_back_F3_4():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        accepted=[
+            ("R2-1-001", {"_severity": "blocker", "fix_criterion": "c", "verification_target": "t"})
+        ],
+        changelog=[
+            {"finding_id": "R2-1-001", "change_made": "edit", "additional_affected_slices": []}
+        ],
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R2-1-001",
+                original_finding_id="R2-1-001",
+                originating_agent_id=1,
+                originating_stage="2a",
+                latest_verification=None,
+            ),
+        ],
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-4" in decision.fallback_reasons
+
+
+def test_decide_3a_accepted_2a_gap_does_not_trigger_fallback():
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        accepted=[
+            ("R2-1-001", {"_severity": "gap", "fix_criterion": "c", "verification_target": "t"})
+        ],
+        changelog=[
+            {"finding_id": "R2-1-001", "change_made": "edit", "additional_affected_slices": [3]}
+        ],
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R2-1-001",
+                original_finding_id="R2-1-001",
+                originating_agent_id=1,
+                originating_stage="2a",
+                affected_slices=[1, 3],
+                latest_verification=None,
+            ),
+        ],
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "narrow"
+    assert decision.selected_slices == (1, 3, 5)
+
+
+def test_decide_3a_missing_carry_forward_falls_back_F3_5():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    # 1a accepted finding R1-1-001 -> 1b lineage row L-1b-R1-1-001
+    r1b = _round_1b(
+        accepted=[("R1-1-001", {"fix_criterion": "c", "verification_target": "t"})],
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": []}
+        ],
+    )
+    r1b["finding_lineage"] = [
+        _lineage(
+            lineage_id="L-1b-R1-1-001",
+            original_finding_id="R1-1-001",
+            originating_agent_id=1,
+            latest_verification=None,
+        ),
+    ]
+    # 2b is missing the carry-forward
+    r2b = _round_2b(finding_lineage=[])
+    decision = decide_3a(state, _round_1a(plan), r1b, _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
+def test_decide_3a_carry_forward_missing_latest_verification_falls_back_F3_5():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R1-1-001",
+                original_finding_id="R1-1-001",
+                originating_agent_id=1,
+                originating_stage="1a",
+                latest_verification=None,
+                prior_lineage_id="L-1b-R1-1-001",
+            ),
+        ]
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
+def test_decide_3a_inherits_F2_like_reasons_as_F3_1():  # noqa: N802
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    # 2b adjudication missing fix_criterion -> would be F2-1 on a 2a decision;
+    # surfaces as F3-1 on a 3a decision.
+    r2b = _round_2b(
+        accepted=[("R2-1-001", {"_severity": "gap"})],
+        changelog=[
+            {"finding_id": "R2-1-001", "change_made": "edit", "additional_affected_slices": []}
+        ],
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-1" in decision.fallback_reasons
+
+
+def test_decide_3a_multiple_is_fixed_propagates_value_error():
+    plan = [
+        {"agent_id": 1, "concern": "a", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "cross1", "slice_definition": "x", "is_fixed": True},
+        {"agent_id": 6, "concern": "cross2", "slice_definition": "x", "is_fixed": True},
+    ]
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    with pytest.raises(ValueError, match="multiple is_fixed"):
+        decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), _round_2b())
+
+
+def test_decide_3a_rejected_2a_finding_does_not_expand_scope():
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R1-1-001",
+                original_finding_id="R1-1-001",
+                originating_agent_id=1,
+                affected_slices=[1],
+                latest_verification={"status": "resolved", "evidence": "x"},
+                prior_lineage_id="L-1b-R1-1-001",
+            ),
+        ]
+    )
+    # Add a rejected 2a finding via adjudications -> no entry in
+    # accepted_findings, no lineage row. Scope stays at lineage's slices.
+    r2b["adjudications"].append(
+        {"finding_id": "R2-2-001", "verdict": "reject", "reasoning": "false positive"}
+    )
+    r2b["rejected_findings"].append({"id": "R2-2-001", "severity": "gap"})
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "narrow"
+    assert decision.selected_slices == (1, 5)
