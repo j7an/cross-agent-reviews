@@ -181,6 +181,72 @@ def _build_audit_envelope(
     }
 
 
+def _build_lineage_row_1b(
+    finding_id: str,
+    audit_findings_by_id: dict[str, dict],
+    adjudication_by_id: dict[str, dict],
+    changelog_by_id: dict[str, dict],
+    slice_plan: list[dict],
+    valid_agent_ids: set[int],
+) -> tuple[dict | None, str | None]:
+    """Build a 1b LineageEntry for one accepted finding, or return
+    (None, reason) when author fields are missing or invalid.
+
+    `reason` is the message body for a LINEAGE_INCOMPLETE marker (no newline).
+    The writer surfaces the marker on stderr and OMITS the row from
+    `finding_lineage`; it does NOT reject the settle. Spec §3.3 deliberately
+    keeps lineage emission best-effort so an author oversight cannot block a
+    settle that is otherwise valid.
+    """
+    adj = adjudication_by_id[finding_id]
+    fc = adj.get("fix_criterion")
+    vt = adj.get("verification_target")
+    if not fc:
+        return None, f"{finding_id}: missing fix_criterion"
+    if not vt:
+        return None, f"{finding_id}: missing verification_target"
+    entry = changelog_by_id.get(finding_id)
+    if entry is None or "additional_affected_slices" not in entry:
+        return None, f"{finding_id}: missing additional_affected_slices on changelog"
+    extras = entry["additional_affected_slices"]
+    bad = [aid for aid in extras if aid not in valid_agent_ids]
+    if bad:
+        return (
+            None,
+            f"{finding_id}: additional_affected_slices references unknown agent_id(s) {bad}",
+        )
+
+    finding = audit_findings_by_id[finding_id]
+    origin_agent_id = int(finding_id.split("-")[1])
+    origin_slice = next(s["concern"] for s in slice_plan if s["agent_id"] == origin_agent_id)
+    affected = sorted({origin_agent_id, *extras})
+    return (
+        {
+            "lineage_id": f"L-1b-{finding_id}",
+            "original_finding_id": finding_id,
+            "originating_stage": "1a",
+            "originating_agent_id": origin_agent_id,
+            "originating_slice": origin_slice,
+            "affected_location": finding["location"],
+            "affected_slices": affected,
+            "fix_criterion": fc,
+            "verification_target": vt,
+            "prior_lineage_id": None,
+            "latest_verification": None,
+        },
+        None,
+    )
+
+
+def _build_lineage_2b(*args, **kwargs) -> list[dict]:
+    """Placeholder for the 2b lineage builder. Implemented in Task 6 of the
+    issue #22 plan; until then the writer emits an empty list for 2b so the
+    schema gate (which forbids `finding_lineage` only in 3b) stays satisfied
+    and Task 6 has a single call site to replace.
+    """
+    return []
+
+
 def _build_settle_envelope(
     slug: str,
     artifact_type: str,
@@ -188,6 +254,9 @@ def _build_settle_envelope(
     payload: dict,
     paired_audit: dict,
     prior_settle: dict | None,
+    *,
+    mode: str | None = None,
+    review_profile: str | None = None,
 ) -> dict:
     stage = payload["stage"]
     round_num = STAGE_TO_ROUND[stage]
@@ -355,6 +424,43 @@ def _build_settle_envelope(
         "changelog": payload["changelog"],
         "self_review": payload["self_review"],
     }
+    # Spec §3.3: finding_lineage is emitted in fast / profile-aware mode only.
+    # `mode == "fast"` alone is not sufficient — a fast block with no profile
+    # is legacy-shaped state and the writer must not synthesize lineage for
+    # it. Thorough envelopes never carry the field at all (legacy parity).
+    if mode == "fast" and review_profile is not None and stage in {"1b", "2b"}:
+        adjudication_by_id = {a["finding_id"]: a for a in payload["adjudications"]}
+        changelog_by_id = {c["finding_id"]: c for c in payload["changelog"]}
+        slice_plan = paired_audit["slice_plan"]
+        valid_agent_ids = {s["agent_id"] for s in slice_plan}
+        lineage: list[dict] = []
+        if stage == "1b":
+            for fid in accepted_finding_ids:
+                row, reason = _build_lineage_row_1b(
+                    fid,
+                    audit_findings_by_id,
+                    adjudication_by_id,
+                    changelog_by_id,
+                    slice_plan,
+                    valid_agent_ids,
+                )
+                if row is None:
+                    print(f"LINEAGE_INCOMPLETE: {reason}", file=sys.stderr)
+                    continue
+                lineage.append(row)
+        else:  # stage == "2b"; full implementation lands in Task 6
+            lineage = _build_lineage_2b(
+                payload,
+                paired_audit,
+                prior_settle,
+                audit_findings_by_id,
+                adjudication_by_id,
+                changelog_by_id,
+                slice_plan,
+                valid_agent_ids,
+                accepted_finding_ids,
+            )
+        envelope["finding_lineage"] = lineage
     if stage == "3b":
         envelope["final_status"] = (
             "READY_FOR_IMPLEMENTATION"
@@ -517,8 +623,16 @@ def _auto_settle(
         "changelog": [],
         "self_review": [],
     }
+    block = state[artifact_type]
     envelope = _build_settle_envelope(
-        slug, artifact_type, artifact_path, payload, audit_envelope, None
+        slug,
+        artifact_type,
+        artifact_path,
+        payload,
+        audit_envelope,
+        None,
+        mode=block.get("mode"),
+        review_profile=block.get("review_profile"),
     )
     source_hash = compute_content_hash(artifact_dir / f"round-{audit_stage}.json")
     agent_count = len(audit_envelope["agents"])
@@ -543,7 +657,6 @@ def _auto_settle(
     # boundary and the caller reports AUTO_SETTLE_FAILED. After this point the
     # only operation that can fail is the state.json write itself.
     atomic_write(artifact_dir / f"round-{settle_stage}.json", body)
-    block = state[artifact_type]
     block["completed_rounds"] = sorted({*block["completed_rounds"], settle_stage})
     block["current_stage"] = NEXT_STAGE[settle_stage]
     block["last_updated_at"] = envelope["emitted_at"]
@@ -699,6 +812,8 @@ def main() -> int:
                 payload,
                 paired_audit,
                 prior_settle,
+                mode=block.get("mode"),
+                review_profile=block.get("review_profile"),
             )
     except ValueError as e:
         return err(str(e))
