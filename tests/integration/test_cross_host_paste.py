@@ -642,3 +642,274 @@ def test_cross_host_via_3b_with_cpv_is_integrity_error(tmp_path):
     result = run(READ, ["--slug", "foo", "--artifact-type", "spec"], cwd=host)
     assert result.returncode == 3
     assert "final verification (3c) did not run" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — fast/patch lineage cross-host parity (issue #22, T31 / T32)
+#
+# These two tests pin the cross-host contract for the impact-routing pipeline:
+# round-1b.json must be byte-identical after paste-import, and the route
+# decision derived from prior rounds must be deterministic across hosts.
+# Together they prove the writer / paste pipeline is host-neutral for the
+# fast/patch profile that drives the new finding_lineage carry-forward.
+# ---------------------------------------------------------------------------
+
+
+def _init_fast_patch(host):
+    """Init host with mode=fast, review_profile=patch."""
+    return run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+            "--review-profile",
+            "patch",
+        ],
+        cwd=host,
+        stdin="",
+    )
+
+
+def _write_1a_fast_patch(host):
+    """Write a 1a audit with one R1-1-001 finding on agent 1; suitable for
+    fast/patch since it is not clean (no auto-settle). Returns the writer
+    result so callers can inspect stdout / disk."""
+    payload = {
+        "stage": "1a",
+        "slice_plan": [
+            {
+                "agent_id": 1,
+                "concern": "Data model & schemas",
+                "slice_definition": "§3-§5",
+                "is_fixed": False,
+            },
+            {
+                "agent_id": 2,
+                "concern": "Error handling & edge cases",
+                "slice_definition": "§6",
+                "is_fixed": False,
+            },
+            {
+                "agent_id": 3,
+                "concern": "Acceptance criteria & testability",
+                "slice_definition": "§7-§8",
+                "is_fixed": False,
+            },
+            {
+                "agent_id": 4,
+                "concern": "Cross-section consistency",
+                "slice_definition": "all",
+                "is_fixed": False,
+            },
+            {
+                "agent_id": 5,
+                "concern": "Global coherence",
+                "slice_definition": "all",
+                "is_fixed": False,
+            },
+        ],
+        "agents": [
+            {
+                "agent_id": 1,
+                "concern": "Data model & schemas",
+                "slice_definition": "§3-§5",
+                "status": "findings_found",
+                "findings": [
+                    {
+                        "location": "§3.2 line 47",
+                        "severity": "blocker",
+                        "finding": "Field foo is undefined.",
+                        "why_it_matters": "Implementer cannot decide its type.",
+                        "suggested_direction": "Define foo in §3.2.",
+                    }
+                ],
+            },
+            {
+                "agent_id": 2,
+                "concern": "Error handling & edge cases",
+                "slice_definition": "§6",
+                "status": "clean",
+                "findings": [],
+            },
+            {
+                "agent_id": 3,
+                "concern": "Acceptance criteria & testability",
+                "slice_definition": "§7-§8",
+                "status": "clean",
+                "findings": [],
+            },
+            {
+                "agent_id": 4,
+                "concern": "Cross-section consistency",
+                "slice_definition": "all",
+                "status": "clean",
+                "findings": [],
+            },
+            {
+                "agent_id": 5,
+                "concern": "Global coherence",
+                "slice_definition": "all",
+                "status": "clean",
+                "findings": [],
+            },
+        ],
+    }
+    input_path = host / "round_1a_lineage_input.json"
+    input_path.write_text(json.dumps(payload))
+    return run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(input_path),
+        ],
+        cwd=host,
+    )
+
+
+def _write_1b_fast_patch_accept(host):
+    """Write a 1b that accepts R1-1-001 with complete lineage author fields
+    (fix_criterion + verification_target + additional_affected_slices=[3])."""
+    payload = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "Define foo with a concrete type in §3.2.",
+                "verification_target": "§3.2 declares foo: string.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Defined foo as a string in §3.2.",
+                "additional_affected_slices": [3],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = host / "round_1b_lineage_input.json"
+    input_path.write_text(json.dumps(payload))
+    return run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(input_path),
+        ],
+        cwd=host,
+    )
+
+
+def test_paste_import_preserves_finding_lineage_byte_for_byte(tmp_path):
+    """T31: drive a fast/patch pipeline through 1a→1b on host A; capture the
+    canonical round-1b.json bytes. Host B is freshly init'd with the same
+    mode/profile (the supported pre-1a bootstrap shape — paste-import does
+    not accept a mid-pipeline bootstrap state). Host B paste-imports each
+    round envelope (1a then 1b) and the resulting round-1b.json must be
+    byte-identical to host A's. This pins the host-neutral canonical encoding
+    that the finding_lineage carry-forward chain depends on."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: init fast/patch, drive 1a → 1b.
+    init_a = _init_fast_patch(host_a)
+    assert init_a.returncode == 0, init_a.stderr
+    r1a = _write_1a_fast_patch(host_a)
+    assert r1a.returncode == 0, r1a.stderr
+    r1b = _write_1b_fast_patch_accept(host_a)
+    assert r1b.returncode == 0, r1b.stderr
+
+    # Capture canonical bytes from host A's disk.
+    round_1a_path_a = host_a / ".cross-agent-reviews/foo/spec/round-1a.json"
+    round_1b_path_a = host_a / ".cross-agent-reviews/foo/spec/round-1b.json"
+    round_1a_bytes_a = round_1a_path_a.read_bytes()
+    round_1b_bytes_a = round_1b_path_a.read_bytes()
+    # Sanity: the 1b envelope carries a finding_lineage row for R1-1-001
+    # (fast/patch + complete author fields = lineage is emitted).
+    settled_a = json.loads(round_1b_bytes_a)
+    assert settled_a.get("finding_lineage"), "host A 1b must emit finding_lineage"
+
+    # Host B: init fast/patch locally (matching mode/profile is required so
+    # the paste-imported round envelopes' lineage gate aligns with the local
+    # state block; a thorough init would fail invariant replay).
+    init_b = _init_fast_patch(host_b)
+    assert init_b.returncode == 0, init_b.stderr
+
+    # Host B: paste-import 1a then 1b from host A's canonical disk bytes.
+    paste_1a = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_1a_bytes_a.decode())
+    assert paste_1a.returncode == 0, paste_1a.stderr
+    paste_1b = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_1b_bytes_a.decode())
+    assert paste_1b.returncode == 0, paste_1b.stderr
+
+    # Byte-parity assertion: the lineage carry-forward chain depends on
+    # round-1b.json being bit-identical across hosts. If canonical encoding
+    # drifts (sort_keys, separators, trailing newline) the chain breaks
+    # silently. Pin it here.
+    round_1b_bytes_b = (host_b / ".cross-agent-reviews/foo/spec/round-1b.json").read_bytes()
+    assert round_1b_bytes_b == round_1b_bytes_a
+
+
+def test_route_decision_identical_across_hosts(tmp_path):
+    """T32: same fast/patch state on both hosts; running
+    `cr_state_read.py --route-decision --stage 2a` on each emits byte-identical
+    stdout. Pins host-neutrality of the route-decision derivation. Host B is
+    bootstrapped via fresh init (matching mode/profile) and paste-import of
+    every prior round envelope from host A."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: init + 1a + 1b locally.
+    assert _init_fast_patch(host_a).returncode == 0
+    assert _write_1a_fast_patch(host_a).returncode == 0
+    assert _write_1b_fast_patch_accept(host_a).returncode == 0
+
+    # Host B: fresh init with matching mode/profile, then paste each round
+    # envelope so both hosts hold identical prior-round files on disk.
+    assert _init_fast_patch(host_b).returncode == 0
+    for stage in ("1a", "1b"):
+        env_bytes = (host_a / f".cross-agent-reviews/foo/spec/round-{stage}.json").read_bytes()
+        paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=env_bytes.decode())
+        assert paste.returncode == 0, f"paste {stage}: {paste.stderr}"
+
+    # Compare stdout from --route-decision on both hosts.
+    args = ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "2a"]
+    out_a = run(READ, args, cwd=host_a)
+    out_b = run(READ, args, cwd=host_b)
+    assert out_a.returncode == 0, out_a.stderr
+    assert out_b.returncode == 0, out_b.stderr
+    assert out_a.stdout == out_b.stdout

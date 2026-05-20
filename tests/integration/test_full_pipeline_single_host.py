@@ -315,3 +315,281 @@ def test_3c_fail_then_pass_records_prior_attempt(tmp_path):
     assert state["spec"]["content_hash"] == env["verified_content_hash"]
     # content_hash was refreshed to the post-recovery bytes, not the post-3b bytes.
     assert state["spec"]["content_hash"] != post_3b_hash
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — fast/patch narrow happy path (issue #22)
+#
+# End-to-end exercise of the impact-routing happy path: 1a (one finding on
+# slice 1) → 1b accept + impact slice 3 → narrow 2a covering {1,3,5} →
+# auto-settled 2b → narrow 3a covering {1,3,5} (all ship_ready) → terminal
+# clean_3a. Pins:
+#   - The writer never emits BLOCKED on the happy path.
+#   - finding_lineage carries from 1b through 2b with the expected shape.
+#   - The terminal state is reached without a 3b ever running.
+# ---------------------------------------------------------------------------
+
+
+def _init_fast_patch(workspace):
+    artifact = workspace / "docs/specs/foo-design.md"
+    return run(
+        INIT,
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+            "--mode",
+            "fast",
+            "--review-profile",
+            "patch",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+
+
+def _write_input_file(workspace, name, payload):
+    path = workspace / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _write_round(workspace, input_path):
+    return run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(input_path),
+        ],
+        cwd=workspace,
+    )
+
+
+_HAPPY_SLICE_PLAN = [
+    {
+        "agent_id": 1,
+        "concern": "Data model & schemas",
+        "slice_definition": "§3-§5",
+        "is_fixed": False,
+    },
+    {
+        "agent_id": 2,
+        "concern": "Error handling & edge cases",
+        "slice_definition": "§6",
+        "is_fixed": False,
+    },
+    {
+        "agent_id": 3,
+        "concern": "Acceptance criteria & testability",
+        "slice_definition": "§7-§8",
+        "is_fixed": False,
+    },
+    {
+        "agent_id": 4,
+        "concern": "Cross-section consistency",
+        "slice_definition": "all",
+        "is_fixed": False,
+    },
+    {
+        "agent_id": 5,
+        "concern": "Global coherence",
+        "slice_definition": "all",
+        "is_fixed": False,
+    },
+]
+
+_HAPPY_CONCERNS = {
+    1: ("Data model & schemas", "§3-§5"),
+    2: ("Error handling & edge cases", "§6"),
+    3: ("Acceptance criteria & testability", "§7-§8"),
+    4: ("Cross-section consistency", "all"),
+    5: ("Global coherence", "all"),
+}
+
+
+def test_patch_fast_narrow_2a_happy_path(tmp_path):
+    """Full pipeline 1a → 1b (accept + impact slice 3) → narrow 2a {1,3,5}
+    (auto-settled) → narrow 3a {1,3,5} (clean) → terminal clean_3a.
+
+    The writer must never emit BLOCKED on this path: every step's stderr
+    must be free of any BLOCKED:* marker. The 1b and 2b envelopes must
+    carry finding_lineage with the expected carry-forward shape. The final
+    state lands at ready_for_implementation via the clean_3a route (no
+    round-3b.json on disk)."""
+    _make_spec_workspace(tmp_path)
+    assert _init_fast_patch(tmp_path).returncode == 0
+
+    blocked: list[str] = []
+
+    def _check(result, stage):
+        # Capture-and-defer: collect each round's stderr so the final
+        # assertion names every offending stage (not just the first).
+        assert result.returncode == 0, f"{stage}: {result.stderr}"
+        if "BLOCKED:" in result.stderr:
+            blocked.append(f"{stage}: {result.stderr.strip()}")
+
+    # 1a: one finding on agent 1, others clean.
+    finding = {
+        "location": "§3.2 line 47",
+        "severity": "blocker",
+        "finding": "Field foo is undefined.",
+        "why_it_matters": "Implementer cannot decide its type.",
+        "suggested_direction": "Define foo in §3.2.",
+    }
+    agents_1a = []
+    for aid in range(1, 6):
+        concern, slice_def = _HAPPY_CONCERNS[aid]
+        agents_1a.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "findings_found" if aid == 1 else "clean",
+                "findings": [finding] if aid == 1 else [],
+            }
+        )
+    input_1a = _write_input_file(
+        tmp_path,
+        "happy_1a.json",
+        {"stage": "1a", "slice_plan": _HAPPY_SLICE_PLAN, "agents": agents_1a},
+    )
+    _check(_write_round(tmp_path, input_1a), "1a")
+
+    # 1b: accept R1-1-001 with complete lineage author fields + impact slice 3.
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "Define foo with a concrete type in §3.2.",
+                "verification_target": "§3.2 declares foo: string.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Defined foo as a string in §3.2.",
+                "additional_affected_slices": [3],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_1b = _write_input_file(tmp_path, "happy_1b.json", payload_1b)
+    _check(_write_round(tmp_path, input_1b), "1b")
+
+    settled_1b = json.loads((tmp_path / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    # 1b lineage shape: one row, originating_slice = "Data model & schemas",
+    # affected_slices = [1, 3] (origin + impact).
+    assert settled_1b["finding_lineage"] == [
+        {
+            "lineage_id": "L-1b-R1-1-001",
+            "original_finding_id": "R1-1-001",
+            "originating_stage": "1a",
+            "originating_agent_id": 1,
+            "originating_slice": "Data model & schemas",
+            "affected_location": "§3.2 line 47",
+            "affected_slices": [1, 3],
+            "fix_criterion": "Define foo with a concrete type in §3.2.",
+            "verification_target": "§3.2 declares foo: string.",
+            "prior_lineage_id": None,
+            "latest_verification": None,
+        }
+    ]
+
+    # 2a: narrow route {1,3,5}. Agent 1 verifies R1-1-001 as resolved; agents
+    # 3 and 5 are clean. A clean 2a in fast mode auto-settles 2b in-process.
+    agents_2a = []
+    for aid in (1, 3, 5):
+        concern, slice_def = _HAPPY_CONCERNS[aid]
+        verifications = []
+        if aid == 1:
+            verifications = [
+                {
+                    "round_1_finding_id": "R1-1-001",
+                    "status": "resolved",
+                    "evidence": "§3.2 now defines foo: string.",
+                }
+            ]
+        agents_2a.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": verifications,
+            }
+        )
+    input_2a = _write_input_file(tmp_path, "happy_2a.json", {"stage": "2a", "agents": agents_2a})
+    _check(_write_round(tmp_path, input_2a), "2a")
+
+    # 2b must exist (auto-settled) and carry forward the 1b lineage row with
+    # latest_verification populated from the 2a verification.
+    round_2b_path = tmp_path / ".cross-agent-reviews/foo/spec/round-2b.json"
+    assert round_2b_path.exists(), "fast/patch clean 2a must auto-settle 2b"
+    settled_2b = json.loads(round_2b_path.read_text())
+    assert settled_2b["finding_lineage"] == [
+        {
+            "lineage_id": "L-2b-R1-1-001",
+            "original_finding_id": "R1-1-001",
+            "originating_stage": "1a",
+            "originating_agent_id": 1,
+            "originating_slice": "Data model & schemas",
+            "affected_location": "§3.2 line 47",
+            "affected_slices": [1, 3],
+            "fix_criterion": "Define foo with a concrete type in §3.2.",
+            "verification_target": "§3.2 declares foo: string.",
+            "prior_lineage_id": "L-1b-R1-1-001",
+            "latest_verification": {
+                "status": "resolved",
+                "evidence": "§3.2 now defines foo: string.",
+            },
+        }
+    ]
+
+    state = json.loads((tmp_path / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3a_pending"
+
+    # 3a: narrow {1,3,5}, all ship_ready (clean). Routes straight to
+    # ready_for_implementation; no 3b is ever written.
+    agents_3a = []
+    for aid in (1, 3, 5):
+        concern, slice_def = _HAPPY_CONCERNS[aid]
+        agents_3a.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "ship_ready",
+                "findings": [],
+                "round_1_verifications": [],
+            }
+        )
+    input_3a = _write_input_file(tmp_path, "happy_3a.json", {"stage": "3a", "agents": agents_3a})
+    _check(_write_round(tmp_path, input_3a), "3a")
+
+    assert not blocked, "writer emitted BLOCKED on happy path: " + "; ".join(blocked)
+
+    state = json.loads((tmp_path / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "ready_for_implementation"
+    assert state["spec"]["completed_rounds"] == ["1a", "1b", "2a", "2b", "3a"]
+    assert not (tmp_path / ".cross-agent-reviews/foo/spec/round-3b.json").exists()
