@@ -33,6 +33,7 @@ from _cr_lib import (
 # findings, or any 2a/3a payload whose `slice_plan` diverges from the prior
 # audit round). Replaying these on import keeps cross-host state in lockstep
 # with what local writes would have produced.
+from cr_routing import decide_2a, decide_3a
 from cr_state_write import (
     SETTLE_STAGES,
     _check_slice_plan_frozen,
@@ -825,6 +826,156 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     return 0
 
 
+def _verbose_reason_2a(code: str, round_1b: dict, slice_plan: list[dict]) -> str:
+    """Expand a 2a fallback code into a human-readable diagnostic.
+
+    For F2-1/F2-2/F2-3 the diagnostic names the offending finding_id so an
+    operator can locate the broken adjudication or changelog entry without
+    re-reading the round file. F2-4..F2-7 are stateless and return a static
+    description.
+    """
+    if code == "F2-4":
+        return "F2-4: review_profile is absent (legacy/unset)"
+    if code == "F2-5":
+        return "F2-5: review_profile is 'greenfield'"
+    if code == "F2-6":
+        return "F2-6: mode is not 'fast'"
+    if code == "F2-7":
+        return "F2-7: mandatory_slice_undetectable"
+    accepted_ids = {f["id"] for f in round_1b.get("accepted_findings", [])}
+    valid = {s["agent_id"] for s in slice_plan}
+    if code == "F2-1":
+        for adj in round_1b.get("adjudications", []):
+            if adj.get("verdict") == "accept" and (
+                not adj.get("fix_criterion") or not adj.get("verification_target")
+            ):
+                fid = adj["finding_id"]
+                missing = []
+                if not adj.get("fix_criterion"):
+                    missing.append("fix_criterion")
+                if not adj.get("verification_target"):
+                    missing.append("verification_target")
+                return f"F2-1: missing {'+'.join(missing)} on accepted adjudication {fid}"
+    if code == "F2-2":
+        for entry in round_1b.get("changelog", []):
+            if entry["finding_id"] in accepted_ids and "additional_affected_slices" not in entry:
+                return (
+                    f"F2-2: changelog for {entry['finding_id']} missing additional_affected_slices"
+                )
+    if code == "F2-3":
+        for entry in round_1b.get("changelog", []):
+            if entry["finding_id"] not in accepted_ids:
+                continue
+            bad = [a for a in entry.get("additional_affected_slices", []) if a not in valid]
+            if bad:
+                return f"F2-3: {entry['finding_id']} declares unknown affected slice(s) {bad}"
+    return code  # safety net — should not fire because the probe found the code
+
+
+def _verbose_reason_3a(
+    code: str,
+    round_1b: dict,
+    round_2a: dict,
+    round_2b: dict,
+    slice_plan: list[dict],
+) -> str:
+    """Expand a 3a fallback code into a human-readable diagnostic.
+
+    F3-1 collapses every author-completeness failure on the 2b envelope
+    (F2-1, F2-2, F2-3) AND the mandatory-slice failure. Critical: re-run each
+    2a-level probe against the **2b envelope** (not the 1b envelope) and
+    report `F3-1 via F2-X: ...` so operators see the actual cause (e.g.
+    `F3-1 via F2-2 on R2-3-001`) instead of a misleading F2-1 message
+    pointing at the 1b lineage.
+    """
+    if code == "F3-1":
+        if not slice_plan or all(s.get("is_fixed") for s in slice_plan):
+            # No non-fixed slice -> mandatory slice undetectable.
+            return "F3-1: mandatory_slice_undetectable"
+        for inner in ("F2-1", "F2-2", "F2-3"):
+            expanded = _verbose_reason_2a(inner, round_2b, slice_plan)
+            if expanded != inner:  # the probe found a concrete cause
+                tail = expanded[len(inner) + 2 :]  # strip "F2-X: "
+                return f"F3-1 via {inner}: {tail}"
+        return "F3-1: 2b lineage author fields incomplete"
+    if code == "F3-2":
+        return "F3-2: 3a impact routing requires mode='fast' AND review_profile='patch'"
+    if code == "F3-3":
+        for agent in round_2a.get("agents", []):
+            for v in agent.get("round_1_verifications", []):
+                if v.get("status") in {"not_resolved", "partially_resolved"}:
+                    return f"F3-3: {v['round_1_finding_id']} verified as {v['status']}"
+    if code == "F3-4":
+        for f in round_2b.get("accepted_findings", []):
+            if f.get("severity") == "blocker":
+                return f"F3-4: accepted 2a blocker {f['id']}"
+    if code == "F3-5":
+        return (
+            "F3-5: lineage carry-forward incomplete "
+            "(missing prior_lineage_id or latest_verification)"
+        )
+    return code
+
+
+def _cmd_route_decision(
+    repo_root: Path, slug: str, artifact_type: str, stage: str, verbose: bool
+) -> int:
+    state_path = state_dir(repo_root) / slug / "state.json"
+    if not state_path.exists():
+        return err(f"no state for slug {slug!r}")
+    state = json.loads(state_path.read_text())
+    block = state.get(artifact_type)
+    if block is None:
+        return err(f"state.json has no {artifact_type!r} block")
+    artifact_dir = state_dir(repo_root) / slug / artifact_type
+    r1a = _read_optional(artifact_dir / "round-1a.json")
+    if r1a is None:
+        return err("route-decision requires round-1a.json on disk")
+    r1b = _read_optional(artifact_dir / "round-1b.json")
+    if r1b is None:
+        return err("route-decision requires round-1b.json on disk")
+    r2a: dict | None = None
+    r2b: dict | None = None
+    if stage == "2a":
+        try:
+            decision = decide_2a(block, r1a, r1b)
+        except ValueError as e:
+            return err(str(e))
+    else:
+        r2a = _read_optional(artifact_dir / "round-2a.json")
+        r2b = _read_optional(artifact_dir / "round-2b.json")
+        if r2a is None or r2b is None:
+            return err("route-decision --stage 3a requires round-2a.json and round-2b.json on disk")
+        try:
+            decision = decide_3a(block, r1a, r1b, r2a, r2b)
+        except ValueError as e:
+            return err(str(e))
+    if verbose:
+        slice_plan = r1a["slice_plan"]
+        if stage == "2a":
+            reasons = tuple(
+                _verbose_reason_2a(c, r1b, slice_plan) for c in decision.fallback_reasons
+            )
+        else:
+            assert r2a is not None  # noqa: S101 - narrows type for pyright
+            assert r2b is not None  # noqa: S101 - narrows type for pyright
+            reasons = tuple(
+                _verbose_reason_3a(c, r1b, r2a, r2b, slice_plan) for c in decision.fallback_reasons
+            )
+    else:
+        reasons = decision.fallback_reasons
+    sys.stdout.write(
+        canonical_json(
+            {
+                "scope": decision.scope,
+                "selected_slices": list(decision.selected_slices),
+                "fallback_reasons": list(reasons),
+            }
+        )
+    )
+    return 0
+
+
 def _cmd_assert(
     repo_root: Path,
     slug: str,
@@ -874,6 +1025,9 @@ def main() -> int:
     p.add_argument("--paste", action="store_true")
     p.add_argument("--assert-mode", choices=["thorough", "fast"])
     p.add_argument("--assert-profile", choices=["patch", "feature", "greenfield"])
+    p.add_argument("--route-decision", action="store_true")
+    p.add_argument("--stage", choices=["2a", "3a"])
+    p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
     try:
@@ -888,6 +1042,12 @@ def main() -> int:
         return _cmd_resolve_drift(repo_root, args.slug, args.resolve_drift)
     if args.check_spec_drift:
         return _cmd_check_spec_drift(repo_root, args.slug)
+    if args.route_decision:
+        if args.artifact_type is None or args.stage is None:
+            return err("--route-decision requires --artifact-type and --stage")
+        return _cmd_route_decision(
+            repo_root, args.slug, args.artifact_type, args.stage, args.verbose
+        )
     if args.assert_mode is not None or args.assert_profile is not None:
         if args.artifact_type is None:
             return err("--artifact-type required for assert mode")
