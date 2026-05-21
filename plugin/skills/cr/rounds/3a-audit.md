@@ -51,7 +51,11 @@ Apply the dispatch template with:
   > cannot proceed without resolution. Allowed severity: `blocker` only.
   > No gaps, no nits, no false_positive_check. Sub-agent status MUST be
   > `ship_ready` (zero findings) or `blocker_found` (≥1 blocker).
-- `${PRIOR_ROUND_PAYLOAD_JSON}` = `[]` (3a does not re-verify; that was 2a's job).
+- `${PRIOR_ROUND_PAYLOAD_JSON}` — under narrow routing, the payload is the
+  **lineage bundle** described in `_shared/dispatch-template.md`
+  (§Lineage-bundle payload), pointing each slice's strict-blocker scan to
+  the regions edited in Rounds 1 and 2. Under broad routing, the payload
+  is `[]` — 3a does not re-verify Round 1 findings; that was 2a's job.
 
 ## 4. Aggregate and write
 
