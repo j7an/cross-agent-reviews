@@ -530,6 +530,79 @@ def test_decide_3a_accepted_1b_finding_without_lineage_falls_back_F3_5():  # noq
     assert "F3-5" in decision.fallback_reasons
 
 
+def test_decide_3a_accepted_2a_finding_without_2b_lineage_falls_back_F3_5():  # noqa: N802
+    # Fail-closed: if 2b accepted a Round 2 finding but no fresh 2b lineage
+    # row was emitted for it (writer best-effort skip on LINEAGE_INCOMPLETE),
+    # decide_3a must fall back broad. Otherwise narrow 3a can skip the slice
+    # the author edited to fix the 2a finding.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        accepted=[
+            ("R2-2-001", {"_severity": "gap", "fix_criterion": "c", "verification_target": "t"}),
+        ],
+        changelog=[
+            {"finding_id": "R2-2-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+        # writer skipped 2b lineage row emission for R2-2-001.
+        finding_lineage=[],
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
+def test_decide_3a_carry_forward_dropping_affected_slice_falls_back_F3_5():  # noqa: N802
+    # Defensive: a 2b carry-forward row must preserve the 1b row's
+    # affected_slices. Shrinking the set (e.g., via paste-import or hand
+    # edit) would silently drop a slice Round 1 actually edited.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r1b = _round_1b(
+        accepted=[("R1-1-001", {"fix_criterion": "c", "verification_target": "t"})],
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+    )
+    r1b["finding_lineage"] = [
+        _lineage(
+            lineage_id="L-1b-R1-1-001",
+            original_finding_id="R1-1-001",
+            originating_agent_id=1,
+            affected_slices=[1, 3],
+            latest_verification=None,
+        ),
+    ]
+    r2a = _round_2a(
+        agents=[
+            {
+                "agent_id": 1,
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [
+                    {"round_1_finding_id": "R1-1-001", "status": "resolved", "evidence": "x"}
+                ],
+            },
+        ]
+    )
+    r2b = _round_2b(
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R1-1-001",
+                original_finding_id="R1-1-001",
+                originating_agent_id=1,
+                # 1b said [1, 3] — carry-forward dropped slice 3.
+                affected_slices=[1],
+                latest_verification={"status": "resolved", "evidence": "x"},
+                prior_lineage_id="L-1b-R1-1-001",
+            ),
+        ]
+    )
+    decision = decide_3a(state, _round_1a(plan), r1b, r2a, r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
 def test_decide_3a_inherits_F2_like_reasons_as_F3_1():  # noqa: N802
     plan = _slice_plan_spec()
     state = _state(mode="fast", review_profile="patch")["spec"]

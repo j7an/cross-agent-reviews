@@ -206,24 +206,47 @@ def decide_3a(
             reasons.append("F3-4")
             break
 
-    # F3-5: every accepted 1b finding must have a 1b lineage row, and every
-    # 1b lineage row must carry forward into 2b with latest_verification
-    # populated. The accepted-without-lineage check fails closed when the
-    # writer skipped lineage emission (LINEAGE_INCOMPLETE stderr) for an
-    # accepted finding — otherwise an empty lineage set would make the
-    # carry-forward check vacuously pass and narrow 3a could skip a slice
-    # Round 1 actually edited.
+    # F3-5: every accepted 1b finding must have a 1b lineage row, every accepted
+    # 2b finding must have a fresh 2b lineage row, every 1b lineage row must
+    # carry forward into 2b with latest_verification populated, and every 2b
+    # carry-forward row must preserve the affected_slices its 1b row declared.
+    # The accepted-without-lineage checks fail closed when the writer skipped
+    # lineage emission (LINEAGE_INCOMPLETE stderr) for an accepted finding —
+    # otherwise an empty/partial lineage set would make the carry-forward check
+    # vacuously pass and narrow 3a could skip a slice Round 1 or Round 2
+    # actually edited. The carry-forward affected_slices check defends against
+    # paste-imported or hand-edited 2b state where a row points to a 1b row by
+    # prior_lineage_id but silently shrinks its affected_slices set.
     accepted_1b_ids = {f["id"] for f in round_1b.get("accepted_findings", [])}
-    lineage_1b_origins = {row["original_finding_id"] for row in round_1b.get("finding_lineage", [])}
-    if accepted_1b_ids - lineage_1b_origins:
+    lineage_1b_by_origin = {
+        row["original_finding_id"]: row for row in round_1b.get("finding_lineage", [])
+    }
+    if accepted_1b_ids - lineage_1b_by_origin.keys():
         reasons.append("F3-5")
-    lineage_1b_ids = {row["lineage_id"] for row in round_1b.get("finding_lineage", [])}
+    lineage_1b_by_id = {row["lineage_id"]: row for row in round_1b.get("finding_lineage", [])}
     lineage_2b = round_2b.get("finding_lineage", [])
     carried_priors = {row.get("prior_lineage_id") for row in lineage_2b}
-    if lineage_1b_ids - carried_priors:
+    if lineage_1b_by_id.keys() - carried_priors:
+        reasons.append("F3-5")
+    accepted_2b_ids = {f["id"] for f in round_2b.get("accepted_findings", [])}
+    lineage_2b_fresh_origins = {
+        row["original_finding_id"] for row in lineage_2b if row.get("originating_stage") == "2a"
+    }
+    if accepted_2b_ids - lineage_2b_fresh_origins:
         reasons.append("F3-5")
     for row in lineage_2b:
         if row.get("originating_stage") == "1a" and row.get("latest_verification") is None:
+            reasons.append("F3-5")
+            break
+        prior_id = row.get("prior_lineage_id")
+        if prior_id is None:
+            continue
+        prior = lineage_1b_by_id.get(prior_id)
+        if prior is None:
+            continue  # already caught by the carry-forward set-difference above
+        prior_affected = set(prior.get("affected_slices", []))
+        current_affected = set(row.get("affected_slices", []))
+        if prior_affected - current_affected:
             reasons.append("F3-5")
             break
 
