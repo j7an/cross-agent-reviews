@@ -1135,3 +1135,986 @@ def test_auto_settle_failure_keeps_manual_settle_boundary(workspace_fast):
     assert "AUTO_SETTLE_FAILED:" in result.stderr
     # stdout is the single 1a audit envelope (byte-identical to the file).
     assert result.stdout == (artifact_dir / "round-1a.json").read_text()
+
+
+# ---------------------------------------------------------------------------
+# finding_lineage emission on 1b settle (issue #22, Task 5)
+#
+# Spec §3.3: the writer emits `finding_lineage` only when BOTH `mode == "fast"`
+# AND `review_profile is not None` (the "fast / profile-aware" gate). Legacy
+# thorough envelopes and fast-without-profile envelopes MUST NOT carry the
+# field at all.
+# ---------------------------------------------------------------------------
+
+
+def _setup_fast_workspace(tmp_path, *, mode: str | None = "fast", review_profile: str | None):
+    """Initialise a workspace whose spec block carries an explicit mode and/or
+    review_profile combination. Returns the workspace root path.
+
+    Mirrors the `workspace_fast` fixture but exposes both knobs so a single
+    helper covers the four matrix cells the lineage gate exercises:
+      - mode=fast,     review_profile=patch       → emit
+      - mode=fast,     review_profile=None        → do not emit
+      - mode=thorough, review_profile=anything    → do not emit
+      - mode=None,     review_profile=anything    → do not emit
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "docs" / "specs").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "tests" / "fixtures" / "artifacts" / "spec.md",
+        tmp_path / "docs" / "specs" / "foo-design.md",
+    )
+    schema_src = REPO_ROOT / "plugin" / "skills" / "cr" / "_shared" / "schema"
+    schema_dst = tmp_path / "plugin" / "skills" / "cr" / "_shared" / "schema"
+    schema_dst.parent.mkdir(parents=True)
+    shutil.copytree(schema_src, schema_dst)
+    artifact = tmp_path / "docs" / "specs" / "foo-design.md"
+    init_args = [
+        "--artifact-path",
+        str(artifact),
+        "--artifact-type",
+        "spec",
+        "--no-gitignore-prompt",
+    ]
+    if mode is not None:
+        init_args += ["--mode", mode]
+    if review_profile is not None:
+        init_args += ["--review-profile", review_profile]
+    run(INIT_SCRIPT, init_args, cwd=tmp_path, stdin="")
+    return tmp_path
+
+
+def _lineage_1a_agents(findings_by_agent: dict[int, list[dict]] | None = None) -> list[dict]:
+    """Build the `agents` list for a 5-slice 1a audit input.
+
+    `findings_by_agent` keys are agent_ids (1..5); values are finding dicts
+    (without `id` — the writer assigns it). Agents not in the dict report
+    `clean` with an empty findings list. Default = all clean.
+    """
+    findings_by_agent = findings_by_agent or {}
+    concerns = {
+        1: ("Data model & schemas", "§3-§5"),
+        2: ("Error handling & edge cases", "§6"),
+        3: ("Acceptance criteria & testability", "§7-§8"),
+        4: ("Cross-section consistency", "all"),
+        5: ("Global coherence", "all"),
+    }
+    out: list[dict] = []
+    for aid in range(1, 6):
+        concern, slice_def = concerns[aid]
+        findings = findings_by_agent.get(aid, [])
+        out.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "findings_found" if findings else "clean",
+                "findings": findings,
+            }
+        )
+    return out
+
+
+def _lineage_1a_slice_plan() -> list[dict]:
+    return [
+        {
+            "agent_id": 1,
+            "concern": "Data model & schemas",
+            "slice_definition": "§3-§5",
+            "is_fixed": False,
+        },
+        {
+            "agent_id": 2,
+            "concern": "Error handling & edge cases",
+            "slice_definition": "§6",
+            "is_fixed": False,
+        },
+        {
+            "agent_id": 3,
+            "concern": "Acceptance criteria & testability",
+            "slice_definition": "§7-§8",
+            "is_fixed": False,
+        },
+        {
+            "agent_id": 4,
+            "concern": "Cross-section consistency",
+            "slice_definition": "all",
+            "is_fixed": False,
+        },
+        {
+            "agent_id": 5,
+            "concern": "Global coherence",
+            "slice_definition": "all",
+            "is_fixed": False,
+        },
+    ]
+
+
+def _lineage_finding(
+    location: str = "§3.2 line 47",
+    severity: str = "blocker",
+    finding: str = "Field foo is undefined.",
+    why: str = "Implementer cannot decide its type.",
+    suggested: str = "Define foo in §3.2.",
+) -> dict:
+    return {
+        "location": location,
+        "severity": severity,
+        "finding": finding,
+        "why_it_matters": why,
+        "suggested_direction": suggested,
+    }
+
+
+def _write_input(tmp_path, name: str, payload: dict) -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _run_writer_with_input(workspace, input_path: Path):
+    return run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(input_path),
+        ],
+        cwd=workspace,
+    )
+
+
+def _drive_to_1b_pending(workspace, tmp_path, *, findings_by_agent):
+    """Write a 1a audit round with the supplied findings; return when state
+    is at round_1b_pending. Used by every lineage test below."""
+    input_1a = {
+        "stage": "1a",
+        "slice_plan": _lineage_1a_slice_plan(),
+        "agents": _lineage_1a_agents(findings_by_agent),
+    }
+    input_path = _write_input(tmp_path, "1a_lineage_input.json", input_1a)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+
+
+def test_1b_emits_finding_lineage_when_author_fields_complete(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "c",
+                "verification_target": "t",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "edit",
+                "additional_affected_slices": [3],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_complete.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    assert settled["finding_lineage"] == [
+        {
+            "lineage_id": "L-1b-R1-1-001",
+            "original_finding_id": "R1-1-001",
+            "originating_stage": "1a",
+            "originating_agent_id": 1,
+            "originating_slice": "Data model & schemas",
+            "affected_location": "L1",
+            "affected_slices": [1, 3],
+            "fix_criterion": "c",
+            "verification_target": "t",
+            "prior_lineage_id": None,
+            "latest_verification": None,
+        }
+    ]
+
+
+def test_1b_emits_empty_finding_lineage_when_no_accepted_findings(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    # Clean 1a — fast/patch auto-settles to a 1b with zero accepted findings.
+    _drive_to_1b_pending(workspace, tmp_path, findings_by_agent={})
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    assert settled["finding_lineage"] == []
+
+
+def test_1b_emits_lineage_for_accept_only_skips_rejects(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={
+            1: [
+                _lineage_finding(location="L-accept"),
+                _lineage_finding(
+                    location="L-reject",
+                    finding="Different concern",
+                    suggested="Other direction",
+                ),
+            ]
+        },
+    )
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "c",
+                "verification_target": "t",
+            },
+            {
+                "finding_id": "R1-1-002",
+                "verdict": "reject",
+                "reasoning": "false positive",
+            },
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "edit",
+                "additional_affected_slices": [],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_mixed.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    assert len(settled["finding_lineage"]) == 1
+    assert settled["finding_lineage"][0]["original_finding_id"] == "R1-1-001"
+
+
+def test_1b_omits_lineage_row_and_warns_on_missing_author_fields(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                # fix_criterion intentionally absent
+                "verification_target": "t",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "edit",
+                "additional_affected_slices": [],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_missing_fc.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    assert settled["finding_lineage"] == []
+    assert "LINEAGE_INCOMPLETE: R1-1-001: missing fix_criterion" in result.stderr
+
+
+def test_1b_omits_lineage_for_unknown_affected_slice_id_and_warns(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    # The 1a slice_plan has 5 agents (ids 1..5). agent_id 6 passes the schema
+    # (the schema allows 1..6) but is unknown to this plan, so the writer must
+    # omit the lineage row and emit LINEAGE_INCOMPLETE.
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "c",
+                "verification_target": "t",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "edit",
+                "additional_affected_slices": [6],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_bad_slice.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())
+    assert settled["finding_lineage"] == []
+    assert "LINEAGE_INCOMPLETE: R1-1-001:" in result.stderr
+    assert "6" in result.stderr
+
+
+def test_1b_thorough_mode_omits_finding_lineage_field_entirely(workspace_with_state):
+    # Default workspace is thorough mode (no --mode flag). Drive 1a + 1b.
+    write_round(workspace_with_state, "round_1a_input.json")
+    result = write_round(workspace_with_state, "round_1b_input.json")
+    assert result.returncode == 0, result.stderr
+    settled = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-1b.json").read_text()
+    )
+    assert "finding_lineage" not in settled
+
+
+def test_1b_fast_mode_with_absent_review_profile_omits_finding_lineage(workspace_fast, tmp_path):
+    # `workspace_fast` is initialised with --mode fast but NO --review-profile.
+    # Spec §3.3: a fast block with no profile is legacy-shaped state; the
+    # writer MUST NOT synthesize lineage for it.
+    write_round(workspace_fast, "round_1a_input.json")  # 1 finding, not clean → manual 1b
+    result = write_round(workspace_fast, "round_1b_input.json")
+    assert result.returncode == 0, result.stderr
+    settled = json.loads(
+        (workspace_fast / ".cross-agent-reviews/foo/spec/round-1b.json").read_text()
+    )
+    assert "finding_lineage" not in settled
+
+
+# ---------------------------------------------------------------------------
+# finding_lineage emission on 2b settle (issue #22, Task 6)
+#
+# 2b lineage = carry-forward of each 1b lineage row (with latest_verification
+# populated from the paired 2a verifications) PLUS one fresh row per accepted
+# 2a finding. Same fast / profile-aware gate as 1b.
+# ---------------------------------------------------------------------------
+
+
+def _lineage_2a_agents_verifying_r1_1_001(
+    *,
+    extra_findings_by_agent: dict[int, list[dict]] | None = None,
+    verification_status: str = "resolved",
+    verification_evidence: str = "§3.2 now defines foo: string.",
+    agent_ids: list[int] | None = None,
+) -> list[dict]:
+    """Build a 2a `agents` list that verifies R1-1-001 on agent 1 and optionally
+    adds new findings to some agents. Every other slice reports verified +
+    clean. Suitable for use with the 5-slice _lineage_1a_slice_plan.
+
+    `agent_ids` restricts the returned agents to the supplied set (used for
+    narrow-route 2a submissions per issue #22 Task 8). Defaults to {1,3,5} —
+    the narrow set produced by accepting R1-1-001 with
+    additional_affected_slices=[3] on the default 5-slice plan (max non-fixed
+    agent = 5 = global_coherence_slice). Tests exercising broad-route paths
+    pass `agent_ids=[1,2,3,4,5]`.
+    """
+    extra = extra_findings_by_agent or {}
+    if agent_ids is None:
+        agent_ids = [1, 3, 5]
+    concerns = {
+        1: ("Data model & schemas", "§3-§5"),
+        2: ("Error handling & edge cases", "§6"),
+        3: ("Acceptance criteria & testability", "§7-§8"),
+        4: ("Cross-section consistency", "all"),
+        5: ("Global coherence", "all"),
+    }
+    out: list[dict] = []
+    for aid in sorted(agent_ids):
+        concern, slice_def = concerns[aid]
+        findings = extra.get(aid, [])
+        verifications = []
+        if aid == 1:
+            verifications = [
+                {
+                    "round_1_finding_id": "R1-1-001",
+                    "status": verification_status,
+                    "evidence": verification_evidence,
+                }
+            ]
+        out.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "issues_found" if findings else "verified",
+                "findings": findings,
+                "round_1_verifications": verifications,
+            }
+        )
+    return out
+
+
+def _drive_to_2b_pending_after_r1_1_001(
+    workspace,
+    tmp_path,
+    *,
+    extra_findings_by_agent: dict[int, list[dict]] | None = None,
+    verification_status: str = "resolved",
+    verification_evidence: str = "§3.2 now defines foo: string.",
+    additional_affected_slices_1b: list[int] | None = None,
+    agent_ids_2a: list[int] | None = None,
+):
+    """Drive 1a (one R1-1-001) → 1b (accept R1-1-001) → 2a (verify R1-1-001,
+    plus any extra new findings). Leaves state at round_2b_pending."""
+    # 1a
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    # 1b — accept R1-1-001
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "Define foo with a concrete type in §3.2.",
+                "verification_target": "§3.2 declares foo: string.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Defined foo as a string in §3.2.",
+                "additional_affected_slices": additional_affected_slices_1b or [3],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_lineage_input.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    # 2a — verify R1-1-001
+    payload_2a = {
+        "stage": "2a",
+        "agents": _lineage_2a_agents_verifying_r1_1_001(
+            extra_findings_by_agent=extra_findings_by_agent,
+            verification_status=verification_status,
+            verification_evidence=verification_evidence,
+            agent_ids=agent_ids_2a,
+        ),
+    }
+    input_path = _write_input(tmp_path, "2a_lineage_input.json", payload_2a)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+
+
+def test_2b_carries_forward_every_1b_lineage_row_with_latest_verification(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    # Clean 2a (R1-1-001 resolved, no new findings) → fast-mode auto-settle
+    # writes round-2b.json in-process. The carry-forward path must also fire
+    # on the auto-settle route, not only on a manually-authored 2b.
+    _drive_to_2b_pending_after_r1_1_001(
+        workspace,
+        tmp_path,
+        verification_status="resolved",
+        verification_evidence="§3.2 now defines foo: string.",
+    )
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-2b.json").read_text())
+    # Pull the 1b row we're carrying forward so the assertion checks every
+    # writer-derived field carries over correctly.
+    row_1b = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-1b.json").read_text())[
+        "finding_lineage"
+    ][0]
+    assert settled["finding_lineage"] == [
+        {
+            "lineage_id": "L-2b-R1-1-001",
+            "original_finding_id": "R1-1-001",
+            "originating_stage": "1a",
+            "originating_agent_id": 1,
+            "originating_slice": row_1b["originating_slice"],
+            "affected_location": row_1b["affected_location"],
+            "affected_slices": row_1b["affected_slices"],
+            "fix_criterion": row_1b["fix_criterion"],
+            "verification_target": row_1b["verification_target"],
+            "prior_lineage_id": "L-1b-R1-1-001",
+            "latest_verification": {
+                "status": "resolved",
+                "evidence": "§3.2 now defines foo: string.",
+            },
+        }
+    ]
+
+
+def test_2b_adds_fresh_row_for_each_accepted_2a_finding(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    # 2a introduces a new gap on agent 1 → R2-1-001.
+    new_finding = _lineage_finding(
+        location="§4.1 line 10",
+        severity="gap",
+        finding="Gap discovered by 2a.",
+    )
+    _drive_to_2b_pending_after_r1_1_001(
+        workspace,
+        tmp_path,
+        extra_findings_by_agent={1: [new_finding]},
+    )
+    payload_2b = {
+        "stage": "2b",
+        "adjudications": [
+            {
+                "finding_id": "R2-1-001",
+                "verdict": "accept",
+                "reasoning": "real gap",
+                "fix_criterion": "Specify behaviour in §4.1.",
+                "verification_target": "§4.1 now lists the behaviour.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R2-1-001",
+                "change_made": "Specified behaviour in §4.1.",
+                "additional_affected_slices": [2],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R2-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "2b_fresh.json", payload_2b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-2b.json").read_text())
+    assert len(settled["finding_lineage"]) == 2
+    # Carry-forward row from 1b.
+    carry = next(r for r in settled["finding_lineage"] if r["original_finding_id"] == "R1-1-001")
+    assert carry["lineage_id"] == "L-2b-R1-1-001"
+    assert carry["prior_lineage_id"] == "L-1b-R1-1-001"
+    assert carry["originating_stage"] == "1a"
+    # Fresh row for the new 2a finding.
+    fresh = next(r for r in settled["finding_lineage"] if r["original_finding_id"] == "R2-1-001")
+    assert fresh == {
+        "lineage_id": "L-2b-R2-1-001",
+        "original_finding_id": "R2-1-001",
+        "originating_stage": "2a",
+        "originating_agent_id": 1,
+        "originating_slice": "Data model & schemas",
+        "affected_location": "§4.1 line 10",
+        "affected_slices": [1, 2],
+        "fix_criterion": "Specify behaviour in §4.1.",
+        "verification_target": "§4.1 now lists the behaviour.",
+        "prior_lineage_id": None,
+        "latest_verification": None,
+    }
+
+
+def test_2b_carry_forward_omits_row_when_2a_lacks_verification(tmp_path):
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    # Give 2a one new finding on agent 3 (which is in the narrow route {1,3,5}
+    # produced by additional_affected_slices=[3]) so 2a isn't clean → the
+    # writer leaves state at round_2b_pending instead of auto-settling, so we
+    # can author a manual 2b.
+    extra = _lineage_finding(location="§5", finding="2a noise.", severity="gap")
+    _drive_to_2b_pending_after_r1_1_001(
+        workspace,
+        tmp_path,
+        extra_findings_by_agent={3: [extra]},
+    )
+    # Hand-edit round-1b.json on disk: inject a phantom lineage row whose
+    # original_finding_id does not appear in the paired 2a's
+    # round_1_verifications. The writer should omit it from the 2b carry-
+    # forward and emit a LINEAGE_INCOMPLETE marker; the legitimate
+    # carry-forward for R1-1-001 stays.
+    round_1b_path = workspace / ".cross-agent-reviews/foo/spec/round-1b.json"
+    round_1b = json.loads(round_1b_path.read_text())
+    phantom = dict(round_1b["finding_lineage"][0])
+    phantom["lineage_id"] = "L-1b-R1-2-001"
+    phantom["original_finding_id"] = "R1-2-001"
+    round_1b["finding_lineage"].append(phantom)
+    round_1b_path.write_text(json.dumps(round_1b))
+    # Reject the 2a finding so no fresh lineage row is added; the assertion
+    # below sees only carry-forward output.
+    payload_2b = {
+        "stage": "2b",
+        "adjudications": [
+            {
+                "finding_id": "R2-3-001",
+                "verdict": "reject",
+                "reasoning": "Not blocking.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [],
+        "self_review": [],
+    }
+    input_path = _write_input(tmp_path, "2b_phantom.json", payload_2b)
+    result = _run_writer_with_input(workspace, input_path)
+    # Writer must not crash on a missing verification: it omits the row and
+    # warns instead.
+    assert result.returncode == 0, result.stderr
+    settled = json.loads((workspace / ".cross-agent-reviews/foo/spec/round-2b.json").read_text())
+    assert len(settled["finding_lineage"]) == 1
+    assert settled["finding_lineage"][0]["original_finding_id"] == "R1-1-001"
+    assert "LINEAGE_INCOMPLETE: R1-2-001: missing 2a verification" in result.stderr
+
+
+def test_2b_thorough_mode_omits_finding_lineage_field_entirely(workspace_with_state):
+    # Default workspace is thorough mode (no --mode flag). Drive 1a → 1b → 2a → 2b.
+    write_round(workspace_with_state, "round_1a_input.json")
+    write_round(workspace_with_state, "round_1b_input.json")
+    write_round(workspace_with_state, "round_2a_input.json")
+    result = write_round(workspace_with_state, "round_2b_input.json")
+    assert result.returncode == 0, result.stderr
+    settled = json.loads(
+        (workspace_with_state / ".cross-agent-reviews/foo/spec/round-2b.json").read_text()
+    )
+    assert "finding_lineage" not in settled
+
+
+# ---------------------------------------------------------------------------
+# Audit-write enforces cardinality against route decision (issue #22, Task 8)
+#
+# `_build_audit_envelope` for 2a / 3a runs the route decision (cr_routing.
+# decide_2a / decide_3a) and requires the submitted agent_ids to exactly
+# match `decision.selected_slices` — no more, no less. 1a keeps the strict
+# slice_plan match. Legacy / thorough state always yields broad over the
+# full slice_plan, so today's full-coverage submissions remain accepted.
+# ---------------------------------------------------------------------------
+
+
+def _drive_to_2a_pending_fast_patch(tmp_path, *, additional_affected_slices=None):
+    """Drive 1a (with R1-1-001 on agent 1) → 1b (accept R1-1-001 with the
+    supplied additional_affected_slices) in fast/patch mode. State is left
+    at round_2a_pending. Returns the workspace path."""
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "Define foo with a concrete type in §3.2.",
+                "verification_target": "§3.2 declares foo: string.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Defined foo as a string in §3.2.",
+                "additional_affected_slices": additional_affected_slices
+                if additional_affected_slices is not None
+                else [3],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_route_input.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    return workspace
+
+
+def _drive_to_2a_pending_fast_patch_missing_fc(tmp_path):
+    """Drive 1a + 1b in fast/patch mode, but the 1b accepted adjudication is
+    MISSING fix_criterion. The writer accepts the 1b (lineage row is omitted
+    with a LINEAGE_INCOMPLETE warning) but the F2-1 route fallback fires for
+    the subsequent 2a decision. State is left at round_2a_pending."""
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_1b_pending(
+        workspace,
+        tmp_path,
+        findings_by_agent={1: [_lineage_finding(location="L1")]},
+    )
+    payload_1b = {
+        "stage": "1b",
+        "adjudications": [
+            {
+                "finding_id": "R1-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                # fix_criterion intentionally absent → F2-1 fallback at 2a
+                "verification_target": "§3.2 declares foo: string.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R1-1-001",
+                "change_made": "Defined foo as a string in §3.2.",
+                "additional_affected_slices": [],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R1-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+    }
+    input_path = _write_input(tmp_path, "1b_missing_fc.json", payload_1b)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    return workspace
+
+
+def _build_2a_payload(agent_ids):
+    """Build a 2a payload covering exactly the supplied agent_ids. Agent 1
+    (if present) carries the R1-1-001 verification; the others report
+    verified + clean. Used by route-cardinality tests where the 2a is
+    intentionally non-clean only by virtue of cardinality, not findings."""
+    return {
+        "stage": "2a",
+        "agents": _lineage_2a_agents_verifying_r1_1_001(agent_ids=list(agent_ids)),
+    }
+
+
+def test_2a_audit_narrow_matching_agents_accepted(tmp_path):
+    """T26: fast/patch with R1-1-001 accepted + additional_affected_slices=[3]
+    → narrow route {1,3,5}. A 2a covering exactly {1,3,5} is accepted."""
+    workspace = _drive_to_2a_pending_fast_patch(tmp_path)
+    payload = _build_2a_payload([1, 3, 5])
+    input_path = _write_input(tmp_path, "2a_narrow_ok.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    assert (workspace / ".cross-agent-reviews/foo/spec/round-2a.json").exists()
+
+
+def test_2a_audit_narrow_missing_selected_slice_rejected(tmp_path):
+    """T27: same narrow route {1,3,5}, but a 2a covering only {1,3} is
+    rejected with a diagnostic that names the missing slice."""
+    workspace = _drive_to_2a_pending_fast_patch(tmp_path)
+    payload = _build_2a_payload([1, 3])
+    input_path = _write_input(tmp_path, "2a_narrow_missing.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 1
+    assert "Route decision is narrow" in result.stderr
+    assert "Missing: [5]" in result.stderr
+
+
+def test_2a_audit_narrow_extra_slice_rejected(tmp_path):
+    """T28: same narrow route {1,3,5}, but a 2a covering {1,2,3,5} is rejected
+    with a diagnostic naming the extra slice."""
+    workspace = _drive_to_2a_pending_fast_patch(tmp_path)
+    payload = _build_2a_payload([1, 2, 3, 5])
+    input_path = _write_input(tmp_path, "2a_narrow_extra.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 1
+    assert "Route decision is narrow" in result.stderr
+    assert "Extra: [2]" in result.stderr
+
+
+def test_2a_audit_broad_must_cover_full_slice_plan(workspace_with_state, tmp_path):
+    """T29: legacy/thorough state (no profile) — route is broad over the full
+    slice_plan. A 2a missing slice 4 is rejected; a 2a covering all five is
+    accepted. Exercises the route-aware code path under the broad branch."""
+    write_round(workspace_with_state, "round_1a_input.json")
+    write_round(workspace_with_state, "round_1b_input.json")
+    # Missing slice 4 → broad coverage is incomplete.
+    bad = json.loads(
+        (REPO_ROOT / "tests/fixtures/state_write_inputs/round_2a_input.json").read_text()
+    )
+    bad["agents"] = [a for a in bad["agents"] if a["agent_id"] != 4]
+    bad_path = tmp_path / "2a_broad_missing.json"
+    bad_path.write_text(json.dumps(bad))
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(bad_path),
+        ],
+        cwd=workspace_with_state,
+    )
+    assert result.returncode == 1
+    assert "Route decision is broad" in result.stderr
+    assert "Missing: [4]" in result.stderr
+    # The canonical fixture submits all five — must still pass.
+    result_ok = write_round(workspace_with_state, "round_2a_input.json")
+    assert result_ok.returncode == 0, result_ok.stderr
+
+
+def test_2a_broad_under_F2_fallback_accepts_full_slice_plan(tmp_path):  # noqa: N802
+    """T7b: fast/patch with F2-1 (missing fix_criterion) forces broad. A 2a
+    covering all five slices is accepted."""
+    workspace = _drive_to_2a_pending_fast_patch_missing_fc(tmp_path)
+    payload = _build_2a_payload([1, 2, 3, 4, 5])
+    input_path = _write_input(tmp_path, "2a_broad_ok.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    assert (workspace / ".cross-agent-reviews/foo/spec/round-2a.json").exists()
+
+
+def test_2a_narrow_audit_under_F2_fallback_rejected(tmp_path):  # noqa: N802
+    """T7a: same broad-by-F2-1 state, but a 2a covering only {1,3,5} is
+    rejected with a diagnostic that names the F2-1 fallback reason."""
+    workspace = _drive_to_2a_pending_fast_patch_missing_fc(tmp_path)
+    payload = _build_2a_payload([1, 3, 5])
+    input_path = _write_input(tmp_path, "2a_narrow_under_fallback.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 1
+    assert "Route decision is broad" in result.stderr
+    assert "fallback: F2-1" in result.stderr
+
+
+def _build_3a_agents(agent_ids, *, blocker_agent_ids=None):
+    """Build a 3a agents list covering exactly the supplied agent_ids. Agents
+    in `blocker_agent_ids` carry a single blocker finding; the rest are
+    ship_ready with empty findings."""
+    blocker_set = set(blocker_agent_ids or [])
+    concerns = {
+        1: ("Data model & schemas", "§3-§5"),
+        2: ("Error handling & edge cases", "§6"),
+        3: ("Acceptance criteria & testability", "§7-§8"),
+        4: ("Cross-section consistency", "all"),
+        5: ("Global coherence", "all"),
+    }
+    out = []
+    for aid in sorted(agent_ids):
+        concern, slice_def = concerns[aid]
+        if aid in blocker_set:
+            findings = [_lineage_finding(severity="blocker")]
+            status = "blocker_found"
+        else:
+            findings = []
+            status = "ship_ready"
+        out.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": status,
+                "findings": findings,
+                "round_1_verifications": [],
+            }
+        )
+    return out
+
+
+def test_3a_narrow_matching_agents_accepted(tmp_path):
+    """fast/patch end-to-end: 1a (R1-1-001) → 1b (accept addl=[3]) → 2a clean
+    (verifies R1-1-001) auto-settles to 2b. 2b carry-forward has
+    affected_slices=[1,3] → narrow 3a route {1,3,5}. A 3a covering exactly
+    {1,3,5} is accepted."""
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    # Drive to 2b_pending (which auto-settles immediately because 2a is clean).
+    _drive_to_2b_pending_after_r1_1_001(workspace, tmp_path)
+    # Pipeline is now at round_3a_pending (auto-settle advanced state past 2b).
+    state = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())
+    assert state["spec"]["current_stage"] == "round_3a_pending"
+    # Narrow 3a covering {1,3,5}.
+    payload = {
+        "stage": "3a",
+        "agents": _build_3a_agents([1, 3, 5]),
+    }
+    input_path = _write_input(tmp_path, "3a_narrow_ok.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 0, result.stderr
+    assert (workspace / ".cross-agent-reviews/foo/spec/round-3a.json").exists()
+
+
+def test_3a_narrow_extra_slice_rejected(tmp_path):
+    """Same state as the narrow-accepted 3a test, but a 3a covering
+    {1,2,3,5} is rejected with a diagnostic naming the extra slice."""
+    workspace = _setup_fast_workspace(tmp_path / "wf", review_profile="patch")
+    _drive_to_2b_pending_after_r1_1_001(workspace, tmp_path)
+    payload = {
+        "stage": "3a",
+        "agents": _build_3a_agents([1, 2, 3, 5]),
+    }
+    input_path = _write_input(tmp_path, "3a_narrow_extra.json", payload)
+    result = _run_writer_with_input(workspace, input_path)
+    assert result.returncode == 1
+    assert "Route decision is narrow" in result.stderr
+    assert "Extra: [2]" in result.stderr

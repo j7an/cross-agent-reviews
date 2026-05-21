@@ -11,6 +11,38 @@ Before any shell tool call in this round that invokes a helper, define
 CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
 ```
 
+## 0. Pre-dispatch route decision
+
+Before dispatch, ask the writer-side router which slices to spawn:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> \
+    --route-decision --stage 3a
+```
+
+Read the `scope` and `selected_slices` fields. When `scope == "narrow"`, dispatch
+exactly the listed slices (each with its own sub-agent). When `scope == "broad"`,
+dispatch every slice in the frozen 1a slice plan. The dispatch payload changes
+shape under narrow routing — see §3 below.
+
+Under narrow routing, derive each sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}` by
+calling the script — do NOT hand-assemble the bundle from `round-2b.json`:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> \
+    --dispatch-bundle --stage 3a --agent-id <N>
+```
+
+Run it once per `selected_slice` `<N>`. The stdout is the canonical
+lineage bundle (shape defined in
+`_shared/dispatch-template.md` §Lineage-bundle payload); pass it verbatim as
+that sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}`. The script reads
+`round-2b.json`'s `finding_lineage` (1b carry-forward rows + fresh 2a rows)
+and emits only the rows relevant to `<N>`, plus `global_summary` for the
+global-coherence and cross-artifact slices.
+
 ## 1. Reuse the canonical slice plan
 
 Same as Round 2a; do NOT include `slice_plan` in the payload below — `cr_state_write.py` sources it from `round-1a.json` and enforces equality.
@@ -36,7 +68,11 @@ Apply the dispatch template with:
   > cannot proceed without resolution. Allowed severity: `blocker` only.
   > No gaps, no nits, no false_positive_check. Sub-agent status MUST be
   > `ship_ready` (zero findings) or `blocker_found` (≥1 blocker).
-- `${PRIOR_ROUND_FINDINGS_JSON}` = `[]` (3a does not re-verify; that was 2a's job).
+- `${PRIOR_ROUND_PAYLOAD_JSON}` — under narrow routing, the payload is the
+  **lineage bundle** described in `_shared/dispatch-template.md`
+  (§Lineage-bundle payload), pointing each slice's strict-blocker scan to
+  the regions edited in Rounds 1 and 2. Under broad routing, the payload
+  is `[]` — 3a does not re-verify Round 1 findings; that was 2a's job.
 
 ## 4. Aggregate and write
 

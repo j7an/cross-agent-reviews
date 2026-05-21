@@ -11,6 +11,38 @@ Before any shell tool call in this round that invokes a helper, define
 CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
 ```
 
+## 0. Pre-dispatch route decision
+
+Before dispatch, ask the writer-side router which slices to spawn:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> \
+    --route-decision --stage 2a
+```
+
+Read the `scope` and `selected_slices` fields. When `scope == "narrow"`, dispatch
+exactly the listed slices (each with its own sub-agent). When `scope == "broad"`,
+dispatch every slice in the frozen 1a slice plan. The dispatch payload changes
+shape under narrow routing — see §4 below.
+
+Under narrow routing, derive each sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}` by
+calling the script — do NOT hand-assemble the bundle from `round-1b.json`:
+
+```bash
+CR_HELPER="<absolute path to the loaded cr skill directory>/_helpers/cr"
+"${CR_HELPER}" state-read --slug <slug> --artifact-type <type> \
+    --dispatch-bundle --stage 2a --agent-id <N>
+```
+
+Run it once per `selected_slice` `<N>`. The stdout is the canonical
+lineage bundle (shape defined in
+`_shared/dispatch-template.md` §Lineage-bundle payload); pass it verbatim as
+that sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}`. The script reads
+`round-1b.json`'s `finding_lineage` and emits only the rows relevant to
+`<N>`, plus `global_summary` for the global-coherence and cross-artifact
+slices.
+
 ## 1. Read the canonical slice plan and Round 1b output
 
 Read `.cross-agent-reviews/<slug>/<artifact_type>/round-1a.json` for the frozen slice plan and `round-1b.json` for the accepted findings (each accepted finding's `agent_id` indicates which slice must verify it).
@@ -46,7 +78,11 @@ Apply the dispatch template with:
   > `verified` (every assigned Round 1 finding resolved AND zero new
   > findings) or `issues_found` (≥1 unresolved Round 1 finding OR ≥1
   > new finding).
-- `${PRIOR_ROUND_FINDINGS_JSON}` = the subset of `accepted_findings` from Round 1b whose `id` matches `R1-<slice agent_id>-NNN`.
+- `${PRIOR_ROUND_PAYLOAD_JSON}` — under narrow routing, the payload is the
+  **lineage bundle** described in `_shared/dispatch-template.md`
+  (§Lineage-bundle payload). Under broad routing, it remains the prior-findings
+  JSON array, as today (the subset of `accepted_findings` from Round 1b whose
+  `id` matches `R1-<slice agent_id>-NNN`).
 
 ## 5. Aggregate and write
 

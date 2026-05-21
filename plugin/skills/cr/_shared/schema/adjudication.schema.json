@@ -8,6 +8,8 @@
   "properties": {
     "finding_id": {"type": "string", "pattern": "^R[123]-[1-6]-[0-9]{3}$"},
     "verdict": {"type": "string", "enum": ["accept", "reject"]},
-    "reasoning": {"type": "string", "minLength": 1}
+    "reasoning": {"type": "string", "minLength": 1},
+    "fix_criterion": {"type": "string", "minLength": 1},
+    "verification_target": {"type": "string", "minLength": 1}
   }
 }

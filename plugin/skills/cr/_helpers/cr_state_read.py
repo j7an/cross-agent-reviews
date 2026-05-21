@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -33,8 +35,11 @@ from _cr_lib import (
 # findings, or any 2a/3a payload whose `slice_plan` diverges from the prior
 # audit round). Replaying these on import keeps cross-host state in lockstep
 # with what local writes would have produced.
+from cr_routing import decide_2a, decide_3a, identify_mandatory_slices
 from cr_state_write import (
     SETTLE_STAGES,
+    _build_lineage_2b,
+    _build_lineage_row_1b,
     _check_slice_plan_frozen,
     _check_verification_set,
     _cross_round_check_2a,
@@ -273,22 +278,80 @@ def _check_agents_match_slice_plan(envelope: dict) -> str | None:
     return None
 
 
-def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | None:
+def _check_agents_match_route(
+    envelope: dict,
+    block: dict | None,
+    prior_1a: dict | None,
+    prior_1b: dict | None,
+    prior_2a: dict | None,
+    prior_2b: dict | None,
+) -> str | None:
+    """Replay the writer's route-aware agent-vs-route check for 2a/3a paste.
+
+    `cr_state_write.py::_build_audit_envelope` computes `decide_2a` /
+    `decide_3a` from `block` + prior on-disk rounds and requires the
+    submitted `agents` to match exactly `decision.selected_slices`. The
+    paste path must replay the same decision so a narrow envelope produced
+    by the writer is accepted on the receiving host. Falls back to the
+    strict slice_plan match when any required input is missing (paste with
+    no local state block; should not occur via `_cmd_paste` which always
+    passes block). Returns an error message on mismatch or unrecoverable
+    inputs, else None."""
+    stage = envelope["stage"]
+    if block is None or prior_1a is None or prior_1b is None:
+        # No way to derive the route decision; fall back to the strict
+        # slice_plan match (preserves legacy behaviour for callers that
+        # don't have a state block).
+        return _check_agents_match_slice_plan(envelope)
+    try:
+        if stage == "2a":
+            decision = decide_2a(block, prior_1a, prior_1b)
+        else:  # 3a
+            if prior_2a is None or prior_2b is None:
+                return _check_agents_match_slice_plan(envelope)
+            decision = decide_3a(block, prior_1a, prior_1b, prior_2a, prior_2b)
+    except ValueError as e:
+        return f"route-decision replay failed on paste: {e}"
+    expected = sorted(decision.selected_slices)
+    actual = sorted(a["agent_id"] for a in envelope["agents"])
+    if actual != expected:
+        scope_label = decision.scope
+        reason_label = (
+            f" (fallback: {','.join(decision.fallback_reasons)})"
+            if decision.scope == "broad" and decision.fallback_reasons
+            else ""
+        )
+        return (
+            f"agent reports do not align with route decision ({scope_label}"
+            f"{reason_label}): expected agent_ids {expected}, got {actual}"
+        )
+    return None
+
+
+def _paste_cross_round_invariants(
+    envelope: dict, artifact_dir: Path, block: dict | None = None
+) -> str | None:
     """Apply the cross-round checks that `cr_state_write.py` runs locally.
 
-    For 1a/2a/3a: the `agents` agent_ids must match the `slice_plan`
-    agent_ids exactly. For 2a: verifications must reference accepted 1b
-    findings with the correct frozen-slice ownership. For 2a/3a: the
-    `slice_plan` must match the prior audit round's slice plan. For
-    1b/2b/3b: the same per-envelope settle invariants
-    `_build_settle_envelope` enforces locally — every paired-audit finding
-    has exactly one adjudication, every accepted finding has matching
-    changelog and self_review entries, and every adjudication / changelog /
-    self_review finding_id resolves into the paired audit (or, for 2b only,
-    the paired 2a's `round_1_verifications`). Returns an error message
-    string on failure, or None when the envelope passes."""
+    For 1a: the `agents` agent_ids must match the `slice_plan` agent_ids
+    exactly. For 2a/3a: the actual `agents` must match the route decision's
+    `selected_slices` — narrow under impact routing, broad (== full
+    slice_plan) under any fallback — replaying `decide_2a` / `decide_3a` over
+    the prior rounds on disk. Without route-awareness here every narrow audit
+    envelope produced by the writer would be rejected cross-host, breaking
+    the impact-routing feature for distributed review. For 2a:
+    verifications must reference accepted 1b findings with the correct
+    frozen-slice ownership. For 2a/3a: the `slice_plan` must match the
+    prior audit round's slice plan. For 1b/2b/3b: the same per-envelope
+    settle invariants `_build_settle_envelope` enforces locally — every
+    paired-audit finding has exactly one adjudication, every accepted
+    finding has matching changelog and self_review entries, and every
+    adjudication / changelog / self_review finding_id resolves into the
+    paired audit (or, for 2b only, the paired 2a's
+    `round_1_verifications`). Returns an error message string on failure,
+    or None when the envelope passes."""
     stage = envelope["stage"]
-    if stage in {"1a", "2a", "3a"}:
+    if stage == "1a":
         err = _check_agents_match_slice_plan(envelope)
         if err is not None:
             return err
@@ -304,10 +367,19 @@ def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | N
             err = _check_slice_plan_frozen(envelope, prior_1a)
             if err is not None:
                 return err
+            err = _check_agents_match_route(envelope, block, prior_1a, prior_1b, None, None)
+            if err is not None:
+                return err
     elif stage == "3a":
         prior_2a = _read_optional(artifact_dir / "round-2a.json")
         if prior_2a is not None:
             err = _check_slice_plan_frozen(envelope, prior_2a)
+            if err is not None:
+                return err
+            prior_1a = _read_optional(artifact_dir / "round-1a.json")
+            prior_1b = _read_optional(artifact_dir / "round-1b.json")
+            prior_2b = _read_optional(artifact_dir / "round-2b.json")
+            err = _check_agents_match_route(envelope, block, prior_1a, prior_1b, prior_2a, prior_2b)
             if err is not None:
                 return err
     elif stage in {"1b", "2b", "3b"}:
@@ -331,6 +403,15 @@ def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | N
         err = _settle_paste_invariants(envelope, paired_audit)
         if err is not None:
             return err
+        if stage in {"1b", "2b"}:
+            prior_settle_for_lineage = (
+                _read_optional(artifact_dir / "round-1b.json") if stage == "2b" else None
+            )
+            err = _check_settle_lineage_parity(
+                envelope, paired_audit, prior_settle_for_lineage, block
+            )
+            if err is not None:
+                return err
     elif stage == "3c":
         paired_3b = _read_optional(artifact_dir / "round-3b.json")
         if paired_3b is None:
@@ -534,6 +615,111 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
     return None
 
 
+def _check_settle_lineage_parity(
+    envelope: dict,
+    paired_audit: dict,
+    prior_settle: dict | None,
+    block: dict | None,
+) -> str | None:
+    """Replay the writer's `finding_lineage` derivation on paste-import.
+
+    In fast / profile-aware mode (`mode == "fast"` AND
+    `review_profile is not None`), `cr_state_write.py::_build_settle_envelope`
+    emits `finding_lineage` for 1b/2b settle rounds. Paste-import previously
+    accepted any schema-valid lineage (including empty, shrunken, or
+    fabricated rows), letting cross-host state diverge from the canonical
+    writer output and breaking the F3-5 narrow-routing safety guarantee.
+    Rebuild the expected lineage from the same inputs the local writer would
+    have used and reject any mismatch.
+
+    Returns None when no parity check applies (legacy / thorough mode, or
+    block context missing). The build helpers emit `LINEAGE_INCOMPLETE`
+    markers on stderr by design; suppress them here — the original write
+    already surfaced them, and replay shouldn't double-emit.
+    """
+    if envelope["stage"] not in {"1b", "2b"}:
+        return None
+    local_emits_lineage = (
+        block is not None
+        and block.get("mode") == "fast"
+        and block.get("review_profile") is not None
+    )
+    has_lineage = "finding_lineage" in envelope
+    if not local_emits_lineage:
+        # Local writer would never emit finding_lineage in legacy / thorough
+        # mode or in a fast block with no review_profile. Accepting a pasted
+        # envelope with the field would persist a shape no local write could
+        # produce, breaking cross-host parity and weakening legacy/thorough
+        # behaviour guarantees (the field becomes load-bearing for routing
+        # checks that legacy/thorough state is not supposed to carry).
+        if has_lineage:
+            return (
+                "finding_lineage present on settle paste but local block is "
+                "not fast / profile-aware (writer would omit the field; "
+                "accepting would persist a shape local writes cannot produce)"
+            )
+        return None
+    if block is None:
+        return None  # narrows type for the rest of the function
+    if not has_lineage:
+        return (
+            "finding_lineage absent under fast / profile-aware mode "
+            "(writer would emit the field, even if empty)"
+        )
+
+    audit_findings_by_id = {
+        f["id"]: f for agent in paired_audit["agents"] for f in agent["findings"]
+    }
+    adjudication_by_id = {a["finding_id"]: a for a in envelope["adjudications"]}
+    changelog_by_id = {c["finding_id"]: c for c in envelope["changelog"]}
+    slice_plan = paired_audit["slice_plan"]
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    accepted_finding_ids = [
+        a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "accept"
+    ]
+
+    expected: list[dict] = []
+    with contextlib.redirect_stderr(io.StringIO()):
+        if envelope["stage"] == "1b":
+            for fid in accepted_finding_ids:
+                row, _reason = _build_lineage_row_1b(
+                    fid,
+                    audit_findings_by_id,
+                    adjudication_by_id,
+                    changelog_by_id,
+                    slice_plan,
+                    valid_agent_ids,
+                )
+                if row is None:
+                    continue
+                expected.append(row)
+        else:  # stage == "2b"
+            payload = {
+                "adjudications": envelope["adjudications"],
+                "changelog": envelope["changelog"],
+                "self_review": envelope["self_review"],
+            }
+            expected = _build_lineage_2b(
+                payload,
+                paired_audit,
+                prior_settle,
+                audit_findings_by_id,
+                adjudication_by_id,
+                changelog_by_id,
+                slice_plan,
+                valid_agent_ids,
+                accepted_finding_ids,
+            )
+
+    if envelope["finding_lineage"] != expected:
+        return (
+            "finding_lineage diverges from the writer-derived expectation "
+            "(rows, affected_slices, lineage_id, or order do not match what "
+            "_build_settle_envelope would have produced from the same inputs)"
+        )
+    return None
+
+
 def _read_optional(path: Path) -> dict | None:
     return json.loads(path.read_text()) if path.exists() else None
 
@@ -688,7 +874,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     # is rejected before it touches disk. Required prior round files must be
     # available locally (the pending-import branch above already confirmed
     # `completed_rounds` and the on-disk round files agree).
-    invariant_err = _paste_cross_round_invariants(instance, artifact_dir)
+    invariant_err = _paste_cross_round_invariants(instance, artifact_dir, block)
     if invariant_err is not None:
         return err(invariant_err)
     # Clean-3a parity for terminal backfill: when the pending import is the
@@ -825,6 +1011,240 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     return 0
 
 
+def _verbose_reason_2a(code: str, round_1b: dict, slice_plan: list[dict]) -> str:
+    """Expand a 2a fallback code into a human-readable diagnostic.
+
+    For F2-1/F2-2/F2-3 the diagnostic names the offending finding_id so an
+    operator can locate the broken adjudication or changelog entry without
+    re-reading the round file. F2-4..F2-7 are stateless and return a static
+    description.
+    """
+    if code == "F2-4":
+        return "F2-4: review_profile is absent (legacy/unset)"
+    if code == "F2-5":
+        return "F2-5: review_profile is 'greenfield'"
+    if code == "F2-6":
+        return "F2-6: mode is not 'fast'"
+    if code == "F2-7":
+        return "F2-7: mandatory_slice_undetectable"
+    accepted_ids = {f["id"] for f in round_1b.get("accepted_findings", [])}
+    valid = {s["agent_id"] for s in slice_plan}
+    if code == "F2-1":
+        for adj in round_1b.get("adjudications", []):
+            if adj.get("verdict") == "accept" and (
+                not adj.get("fix_criterion") or not adj.get("verification_target")
+            ):
+                fid = adj["finding_id"]
+                missing = []
+                if not adj.get("fix_criterion"):
+                    missing.append("fix_criterion")
+                if not adj.get("verification_target"):
+                    missing.append("verification_target")
+                return f"F2-1: missing {'+'.join(missing)} on accepted adjudication {fid}"
+    if code == "F2-2":
+        for entry in round_1b.get("changelog", []):
+            if entry["finding_id"] in accepted_ids and "additional_affected_slices" not in entry:
+                return (
+                    f"F2-2: changelog for {entry['finding_id']} missing additional_affected_slices"
+                )
+    if code == "F2-3":
+        for entry in round_1b.get("changelog", []):
+            if entry["finding_id"] not in accepted_ids:
+                continue
+            bad = [a for a in entry.get("additional_affected_slices", []) if a not in valid]
+            if bad:
+                return f"F2-3: {entry['finding_id']} declares unknown affected slice(s) {bad}"
+    return code  # safety net — should not fire because the probe found the code
+
+
+def _verbose_reason_3a(
+    code: str,
+    round_1b: dict,
+    round_2a: dict,
+    round_2b: dict,
+    slice_plan: list[dict],
+) -> str:
+    """Expand a 3a fallback code into a human-readable diagnostic.
+
+    F3-1 collapses every author-completeness failure on the 2b envelope
+    (F2-1, F2-2, F2-3) AND the mandatory-slice failure. Critical: re-run each
+    2a-level probe against the **2b envelope** (not the 1b envelope) and
+    report `F3-1 via F2-X: ...` so operators see the actual cause (e.g.
+    `F3-1 via F2-2 on R2-3-001`) instead of a misleading F2-1 message
+    pointing at the 1b lineage.
+    """
+    if code == "F3-1":
+        if not slice_plan or all(s.get("is_fixed") for s in slice_plan):
+            # No non-fixed slice -> mandatory slice undetectable.
+            return "F3-1: mandatory_slice_undetectable"
+        for inner in ("F2-1", "F2-2", "F2-3"):
+            expanded = _verbose_reason_2a(inner, round_2b, slice_plan)
+            if expanded != inner:  # the probe found a concrete cause
+                tail = expanded[len(inner) + 2 :]  # strip "F2-X: "
+                return f"F3-1 via {inner}: {tail}"
+        return "F3-1: 2b lineage author fields incomplete"
+    if code == "F3-2":
+        return "F3-2: 3a impact routing requires mode='fast' AND review_profile='patch'"
+    if code == "F3-3":
+        for agent in round_2a.get("agents", []):
+            for v in agent.get("round_1_verifications", []):
+                if v.get("status") in {"not_resolved", "partially_resolved"}:
+                    return f"F3-3: {v['round_1_finding_id']} verified as {v['status']}"
+    if code == "F3-4":
+        for f in round_2b.get("accepted_findings", []):
+            if f.get("severity") == "blocker":
+                return f"F3-4: accepted 2a blocker {f['id']}"
+    if code == "F3-5":
+        return (
+            "F3-5: lineage carry-forward incomplete "
+            "(missing prior_lineage_id or latest_verification)"
+        )
+    return code
+
+
+def _cmd_route_decision(
+    repo_root: Path, slug: str, artifact_type: str, stage: str, verbose: bool
+) -> int:
+    state_path = state_dir(repo_root) / slug / "state.json"
+    if not state_path.exists():
+        return err(f"no state for slug {slug!r}")
+    state = json.loads(state_path.read_text())
+    block = state.get(artifact_type)
+    if block is None:
+        return err(f"state.json has no {artifact_type!r} block")
+    artifact_dir = state_dir(repo_root) / slug / artifact_type
+    r1a = _read_optional(artifact_dir / "round-1a.json")
+    if r1a is None:
+        return err("route-decision requires round-1a.json on disk")
+    r1b = _read_optional(artifact_dir / "round-1b.json")
+    if r1b is None:
+        return err("route-decision requires round-1b.json on disk")
+    r2a: dict | None = None
+    r2b: dict | None = None
+    if stage == "2a":
+        try:
+            decision = decide_2a(block, r1a, r1b)
+        except ValueError as e:
+            return err(str(e))
+    else:
+        r2a = _read_optional(artifact_dir / "round-2a.json")
+        r2b = _read_optional(artifact_dir / "round-2b.json")
+        if r2a is None or r2b is None:
+            return err("route-decision --stage 3a requires round-2a.json and round-2b.json on disk")
+        try:
+            decision = decide_3a(block, r1a, r1b, r2a, r2b)
+        except ValueError as e:
+            return err(str(e))
+    if verbose:
+        slice_plan = r1a["slice_plan"]
+        if stage == "2a":
+            reasons = tuple(
+                _verbose_reason_2a(c, r1b, slice_plan) for c in decision.fallback_reasons
+            )
+        else:
+            assert r2a is not None  # noqa: S101 - narrows type for pyright
+            assert r2b is not None  # noqa: S101 - narrows type for pyright
+            reasons = tuple(
+                _verbose_reason_3a(c, r1b, r2a, r2b, slice_plan) for c in decision.fallback_reasons
+            )
+    else:
+        reasons = decision.fallback_reasons
+    sys.stdout.write(
+        canonical_json(
+            {
+                "scope": decision.scope,
+                "selected_slices": list(decision.selected_slices),
+                "fallback_reasons": list(reasons),
+            }
+        )
+    )
+    return 0
+
+
+def _cmd_dispatch_bundle(
+    repo_root: Path, slug: str, artifact_type: str, stage: str, agent_id: int
+) -> int:
+    """Emit the per-slice lineage bundle for narrow-routing dispatch.
+
+    Mirrors the §Lineage-bundle payload shape in
+    `_shared/dispatch-template.md`. The lineage source is the preceding
+    settle round: 1b for stage 2a, 2b for stage 3a. The caller invokes this
+    once per `selected_slice` from `--route-decision` and passes the
+    resulting JSON as the sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}`.
+
+    Construction belongs in the script because the transformation is
+    deterministic (set-membership filters + a small aggregate) and the LLM
+    would otherwise have to assemble it by hand from the on-disk round
+    files, where any drift between operator and writer breaks the
+    F3-5 / dispatch-payload contract.
+    """
+    state_path = state_dir(repo_root) / slug / "state.json"
+    if not state_path.exists():
+        return err(f"no state for slug {slug!r}")
+    artifact_dir = state_dir(repo_root) / slug / artifact_type
+    r1a = _read_optional(artifact_dir / "round-1a.json")
+    if r1a is None:
+        return err("dispatch-bundle requires round-1a.json on disk")
+    if stage == "2a":
+        settle = _read_optional(artifact_dir / "round-1b.json")
+        if settle is None:
+            return err("dispatch-bundle --stage 2a requires round-1b.json on disk")
+    else:
+        settle = _read_optional(artifact_dir / "round-2b.json")
+        if settle is None:
+            return err("dispatch-bundle --stage 3a requires round-2b.json on disk")
+
+    slice_plan = r1a["slice_plan"]
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    if agent_id not in valid_agent_ids:
+        return err(f"--agent-id {agent_id} is not in the round-1a slice_plan")
+
+    lineage = settle.get("finding_lineage", [])
+    verifications = [row for row in lineage if row.get("originating_agent_id") == agent_id]
+    impacts = [
+        row
+        for row in lineage
+        if agent_id in row.get("affected_slices", [])
+        and row.get("originating_agent_id") != agent_id
+    ]
+
+    try:
+        mandatory = identify_mandatory_slices(slice_plan)
+    except ValueError as e:
+        return err(str(e))
+    include_summary = (
+        agent_id
+        in {
+            mandatory["global_coherence_slice"],
+            mandatory["cross_artifact_slice"],
+        }
+        and agent_id is not None
+    )
+    bundle: dict = {
+        "verifications_for_this_slice": verifications,
+        "impacts_for_this_slice": impacts,
+    }
+    if include_summary:
+        all_affected: set[int] = set()
+        for row in lineage:
+            all_affected.update(row.get("affected_slices", []))
+        # accepted_findings_count tracks the number of lineage rows surfaced
+        # in this bundle (one row per accepted finding whose edits are
+        # represented), not just len(settle.accepted_findings). In a 3a
+        # bundle this matters: the lineage contains 1b carry-forward rows
+        # plus fresh 2a rows, while settle.accepted_findings is only the
+        # 2b-accepted set. Aligning the count with edit_locations_compact
+        # 1:1 keeps the summary internally consistent for the
+        # global/coherence sub-agent.
+        bundle["global_summary"] = {
+            "accepted_findings_count": len(lineage),
+            "all_affected_slices": sorted(all_affected),
+            "edit_locations_compact": [row.get("affected_location", "") for row in lineage],
+        }
+    sys.stdout.write(canonical_json(bundle))
+    return 0
+
+
 def _cmd_assert(
     repo_root: Path,
     slug: str,
@@ -874,6 +1294,11 @@ def main() -> int:
     p.add_argument("--paste", action="store_true")
     p.add_argument("--assert-mode", choices=["thorough", "fast"])
     p.add_argument("--assert-profile", choices=["patch", "feature", "greenfield"])
+    p.add_argument("--route-decision", action="store_true")
+    p.add_argument("--dispatch-bundle", action="store_true")
+    p.add_argument("--agent-id", type=int)
+    p.add_argument("--stage", choices=["2a", "3a"])
+    p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
     try:
@@ -888,6 +1313,18 @@ def main() -> int:
         return _cmd_resolve_drift(repo_root, args.slug, args.resolve_drift)
     if args.check_spec_drift:
         return _cmd_check_spec_drift(repo_root, args.slug)
+    if args.route_decision:
+        if args.artifact_type is None or args.stage is None:
+            return err("--route-decision requires --artifact-type and --stage")
+        return _cmd_route_decision(
+            repo_root, args.slug, args.artifact_type, args.stage, args.verbose
+        )
+    if args.dispatch_bundle:
+        if args.artifact_type is None or args.stage is None or args.agent_id is None:
+            return err("--dispatch-bundle requires --artifact-type, --stage, and --agent-id")
+        return _cmd_dispatch_bundle(
+            repo_root, args.slug, args.artifact_type, args.stage, args.agent_id
+        )
     if args.assert_mode is not None or args.assert_profile is not None:
         if args.artifact_type is None:
             return err("--artifact-type required for assert mode")

@@ -75,7 +75,7 @@ per-slice model selection. Dispatch in parallel using
   > rounds, so the prior-round-verification meaning of
   > `false_positive_check` from rounds 2a/3a does NOT apply here. Return
   > your findings using the structured shape; the script assigns IDs.
-- `${PRIOR_ROUND_FINDINGS_JSON}` = `[]` (Round 1a has no prior findings)
+- `${PRIOR_ROUND_PAYLOAD_JSON}` = `[]` (Round 1a has no prior findings)
 
 If a sub-agent returns escalation status (`blocked`, `needs_context`),
 halt the round before invoking `cr_state_write.py`. Surface the

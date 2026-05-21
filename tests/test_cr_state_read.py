@@ -1014,7 +1014,11 @@ def test_paste_3a_rejects_partial_agents_against_slice_plan(workspace_with_1a, f
         SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
     )
     assert result.returncode == 1
-    assert "slice_plan" in result.stderr
+    # Paste replays the route decision (broad here, because the fixture has
+    # no fast/patch state block). Either the route-decision branch or the
+    # legacy slice-plan branch must reject the partial agent set; both name
+    # the missing agent_ids in the error.
+    assert ("route decision" in result.stderr) or ("slice_plan" in result.stderr)
     assert "agent_ids" in result.stderr
 
 
@@ -1697,3 +1701,373 @@ def test_paste_rejects_auto_settled_round_with_mismatched_hash(tmp_path):
     assert not (b_dir / "round-1b.json").exists()
     state = json.loads((host_b / ".cross-agent-reviews/foo/state.json").read_text())
     assert state["spec"]["current_stage"] == "round_1b_pending"
+
+
+# -----------------------------------------------------------------------------
+# --route-decision tests (Task 9, issue #22)
+# -----------------------------------------------------------------------------
+
+
+def _spec_slice_plan_5():
+    """A 5-slice plan with agent_id 5 as the global-coherence slice."""
+    return [
+        {"agent_id": 1, "concern": "a", "slice_definition": "s1", "is_fixed": False},
+        {"agent_id": 2, "concern": "b", "slice_definition": "s2", "is_fixed": False},
+        {"agent_id": 3, "concern": "c", "slice_definition": "s3", "is_fixed": False},
+        {"agent_id": 4, "concern": "d", "slice_definition": "s4", "is_fixed": False},
+        {"agent_id": 5, "concern": "coh", "slice_definition": "all", "is_fixed": False},
+    ]
+
+
+def _seed_route_state(
+    workspace,
+    *,
+    mode="fast",
+    review_profile="patch",
+    current_stage="round_2a_pending",
+    completed_rounds=("1a", "1b"),
+):
+    """Write a minimal state.json with a `spec` block carrying mode/profile."""
+    slug_dir = workspace / ".cross-agent-reviews/foo"
+    spec_dir = slug_dir / "spec"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "schema_version": 1,
+        "slug": "foo",
+        "spec": {
+            "path": "docs/specs/foo-design.md",
+            "content_hash": "sha256:" + "0" * 64,
+            "current_stage": current_stage,
+            "completed_rounds": list(completed_rounds),
+            "started_at": "2026-05-19T09:00:00Z",
+            "last_updated_at": "2026-05-19T10:00:00Z",
+        },
+    }
+    if mode is not None:
+        state["spec"]["mode"] = mode
+    if review_profile is not None:
+        state["spec"]["review_profile"] = review_profile
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return spec_dir
+
+
+def _write_round_1a(spec_dir, slice_plan):
+    (spec_dir / "round-1a.json").write_text(
+        json.dumps({"stage": "1a", "slice_plan": slice_plan, "agents": []}) + "\n"
+    )
+
+
+def _write_round_1b(spec_dir, *, accepted=(), changelog=(), adjudications=None):
+    if adjudications is None:
+        adjudications = [
+            {"finding_id": fid, "verdict": "accept", "reasoning": "ok", **extras}
+            for fid, extras in accepted
+        ]
+    env = {
+        "stage": "1b",
+        "slice_plan": [],
+        "adjudications": list(adjudications),
+        "accepted_findings": [{"id": fid} for fid, _ in accepted],
+        "rejected_findings": [],
+        "changelog": list(changelog),
+        "self_review": [],
+    }
+    (spec_dir / "round-1b.json").write_text(json.dumps(env) + "\n")
+
+
+def _write_round_2a(spec_dir, *, agents=()):
+    (spec_dir / "round-2a.json").write_text(
+        json.dumps({"stage": "2a", "slice_plan": [], "agents": list(agents)}) + "\n"
+    )
+
+
+def _write_round_2b(spec_dir, *, accepted=(), changelog=(), finding_lineage=(), adjudications=None):
+    if adjudications is None:
+        adjudications = [
+            {"finding_id": fid, "verdict": "accept", "reasoning": "ok", **extras}
+            for fid, extras in accepted
+        ]
+    env = {
+        "stage": "2b",
+        "slice_plan": [],
+        "adjudications": list(adjudications),
+        "accepted_findings": [
+            {"id": fid, "severity": extras.get("_severity", "gap")} for fid, extras in accepted
+        ],
+        "rejected_findings": [],
+        "changelog": list(changelog),
+        "self_review": [],
+    }
+    if finding_lineage:
+        env["finding_lineage"] = list(finding_lineage)
+    (spec_dir / "round-2b.json").write_text(json.dumps(env) + "\n")
+
+
+def test_route_decision_2a_narrow_emits_canonical_json(workspace):
+    """Fast/patch with complete 1b lineage emits a narrow scope as canonical JSON."""
+    spec_dir = _seed_route_state(workspace)
+    plan = _spec_slice_plan_5()
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(
+        spec_dir,
+        accepted=[("R1-1-001", {"fix_criterion": "c", "verification_target": "t"})],
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+    )
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "2a"],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    expected = (
+        json.dumps(
+            {"fallback_reasons": [], "scope": "narrow", "selected_slices": [1, 3, 5]},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    assert result.stdout == expected
+
+
+def test_route_decision_2a_broad_with_reasons(workspace):
+    """Fast/patch with a 1b adjudication missing fix_criterion emits broad+F2-1."""
+    spec_dir = _seed_route_state(workspace)
+    plan = _spec_slice_plan_5()
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(
+        spec_dir,
+        accepted=[("R1-1-001", {"verification_target": "t"})],  # no fix_criterion
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": []},
+        ],
+    )
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "2a"],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "broad"
+    assert payload["fallback_reasons"] == ["F2-1"]
+    assert payload["selected_slices"] == [1, 2, 3, 4, 5]
+
+
+def test_route_decision_2a_verbose_expands_reasons(workspace):
+    """--verbose expands F2-1 to a diagnostic that names the offending finding_id."""
+    spec_dir = _seed_route_state(workspace)
+    plan = _spec_slice_plan_5()
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(
+        spec_dir,
+        accepted=[("R1-2-001", {"verification_target": "t"})],  # missing fix_criterion
+        changelog=[
+            {"finding_id": "R1-2-001", "change_made": "edit", "additional_affected_slices": []},
+        ],
+    )
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--route-decision",
+            "--stage",
+            "2a",
+            "--verbose",
+        ],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "broad"
+    assert payload["fallback_reasons"] == [
+        "F2-1: missing fix_criterion on accepted adjudication R1-2-001"
+    ]
+
+
+def test_route_decision_2a_requires_round_1b(workspace):
+    """`--route-decision --stage 2a` errors with a message naming round-1b.json
+    when the prior 1b file is absent."""
+    spec_dir = _seed_route_state(workspace)
+    _write_round_1a(spec_dir, _spec_slice_plan_5())
+    # No round-1b.json on disk.
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "2a"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "round-1b.json" in result.stderr
+
+
+def test_route_decision_3a_requires_round_2b(workspace):
+    """`--route-decision --stage 3a` errors with a message naming round-2b.json
+    when the prior 2b file is absent."""
+    spec_dir = _seed_route_state(
+        workspace,
+        current_stage="round_3a_pending",
+        completed_rounds=("1a", "1b", "2a", "2b"),
+    )
+    _write_round_1a(spec_dir, _spec_slice_plan_5())
+    _write_round_1b(spec_dir)
+    _write_round_2a(spec_dir)
+    # No round-2b.json on disk.
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "3a"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "round-2b.json" in result.stderr
+
+
+def test_route_decision_multiple_fixed_slices_error(workspace):
+    """A slice_plan with two is_fixed=True slices triggers the writer-level
+    refusal contract: --route-decision exits non-zero with a diagnostic that
+    names the duplicate (via the propagated ValueError)."""
+    spec_dir = _seed_route_state(workspace)
+    plan = [
+        {"agent_id": 1, "concern": "a", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "x1", "slice_definition": "x", "is_fixed": True},
+        {"agent_id": 6, "concern": "x2", "slice_definition": "x", "is_fixed": True},
+    ]
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(spec_dir)
+    result = run(
+        SCRIPT,
+        ["--slug", "foo", "--artifact-type", "spec", "--route-decision", "--stage", "2a"],
+        cwd=workspace,
+    )
+    assert result.returncode != 0
+    assert "multiple is_fixed" in result.stderr
+    # The diagnostic must name the duplicated agent_ids so an operator knows
+    # which slices to fix.
+    assert "5" in result.stderr
+    assert "6" in result.stderr
+
+
+def test_route_decision_3a_verbose_F3_1_via_F2_2(workspace):  # noqa: N802
+    """3a verbose probes F2-2 against the 2b envelope: a changelog entry for an
+    accepted 2b finding missing `additional_affected_slices` must be reported as
+    `F3-1 via F2-2: changelog for <fid> missing additional_affected_slices`."""
+    spec_dir = _seed_route_state(
+        workspace,
+        current_stage="round_3a_pending",
+        completed_rounds=("1a", "1b", "2a", "2b"),
+    )
+    plan = _spec_slice_plan_5()
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(spec_dir)
+    _write_round_2a(spec_dir)
+    _write_round_2b(
+        spec_dir,
+        accepted=[("R2-3-001", {"fix_criterion": "c", "verification_target": "t"})],
+        # changelog entry exists for the accepted 2b finding but lacks
+        # additional_affected_slices entirely.
+        changelog=[{"finding_id": "R2-3-001", "change_made": "edit"}],
+        finding_lineage=[],
+    )
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--route-decision",
+            "--stage",
+            "3a",
+            "--verbose",
+        ],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "broad"
+    found = [r for r in payload["fallback_reasons"] if r.startswith("F3-1 via F2-2: ")]
+    assert found, payload["fallback_reasons"]
+    assert "R2-3-001" in found[0]
+    assert found[0] == "F3-1 via F2-2: changelog for R2-3-001 missing additional_affected_slices"
+
+
+def test_route_decision_3a_verbose_F3_1_via_F2_3(workspace):  # noqa: N802
+    """3a verbose probes F2-3 against the 2b envelope: a changelog entry whose
+    `additional_affected_slices` references an agent_id not in the frozen 1a
+    slice_plan must be reported as `F3-1 via F2-3: <fid> declares unknown
+    affected slice(s) [<bad>]`."""
+    spec_dir = _seed_route_state(
+        workspace,
+        current_stage="round_3a_pending",
+        completed_rounds=("1a", "1b", "2a", "2b"),
+    )
+    plan = _spec_slice_plan_5()  # agent_ids 1..5
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(spec_dir)
+    _write_round_2a(spec_dir)
+    _write_round_2b(
+        spec_dir,
+        accepted=[("R2-3-002", {"fix_criterion": "c", "verification_target": "t"})],
+        changelog=[
+            {"finding_id": "R2-3-002", "change_made": "edit", "additional_affected_slices": [6]},
+        ],
+        finding_lineage=[],
+    )
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--route-decision",
+            "--stage",
+            "3a",
+            "--verbose",
+        ],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "broad"
+    found = [r for r in payload["fallback_reasons"] if r.startswith("F3-1 via F2-3: ")]
+    assert found, payload["fallback_reasons"]
+    assert "R2-3-002" in found[0]
+    assert "6" in found[0]
+
+
+def test_route_decision_3a_verbose_F3_1_mandatory_slice_undetectable(workspace):  # noqa: N802
+    """A patch+fast slice_plan with no is_fixed=False slices renders the F3-1
+    umbrella as the verbose mandatory-slice-undetectable diagnostic."""
+    spec_dir = _seed_route_state(
+        workspace,
+        current_stage="round_3a_pending",
+        completed_rounds=("1a", "1b", "2a", "2b"),
+    )
+    plan = [{"agent_id": 6, "concern": "cross", "slice_definition": "x", "is_fixed": True}]
+    _write_round_1a(spec_dir, plan)
+    _write_round_1b(spec_dir)
+    _write_round_2a(spec_dir)
+    _write_round_2b(spec_dir)
+    result = run(
+        SCRIPT,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--route-decision",
+            "--stage",
+            "3a",
+            "--verbose",
+        ],
+        cwd=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "broad"
+    assert "F3-1: mandatory_slice_undetectable" in payload["fallback_reasons"]

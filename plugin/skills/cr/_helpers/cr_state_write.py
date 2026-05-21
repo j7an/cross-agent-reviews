@@ -29,6 +29,7 @@ from _cr_lib import (
     state_dir,
     validate_slug,
 )
+from cr_routing import decide_2a, decide_3a
 from jsonschema import Draft202012Validator
 
 STAGE_TO_ROUND = {"1a": 1, "1b": 1, "2a": 2, "2b": 2, "3a": 3, "3b": 3, "3c": 3}
@@ -139,7 +140,17 @@ def _assign_finding_ids(round_num: int, agents: list[dict]) -> None:
 
 
 def _build_audit_envelope(
-    slug: str, artifact_type: str, artifact_path: str, payload: dict, prior_audit: dict | None
+    slug: str,
+    artifact_type: str,
+    artifact_path: str,
+    payload: dict,
+    prior_audit: dict | None,
+    *,
+    block: dict | None = None,
+    round_1a: dict | None = None,
+    round_1b: dict | None = None,
+    round_2a: dict | None = None,
+    round_2b: dict | None = None,
 ) -> dict:
     stage = payload["stage"]
     round_num = STAGE_TO_ROUND[stage]
@@ -152,19 +163,70 @@ def _build_audit_envelope(
             )
         slice_plan = prior_audit["slice_plan"]
     agents = [dict(a) for a in payload["agents"]]
-    # Cross-array invariant: agent_ids must be unique AND match the
-    # slice_plan's agent_ids exactly. Without this check, duplicate or
-    # missing agent reports produce schema-valid envelopes whose finding
-    # IDs can collide (e.g., two agents both numbered 1 → both produce
-    # `R1-1-001` for distinct findings, which silently breaks downstream
-    # adjudication and verification matching).
+    # Cross-array invariant: agent_ids must be unique. For 2a / 3a the route
+    # decision (cr_routing) decides which slices the audit must cover —
+    # narrow under impact routing, broad (== full slice_plan) under any
+    # fallback condition (F2-*, F3-*) or legacy state. 1a keeps today's
+    # strict slice-plan match because the slice_plan is freshly authored
+    # there and `decide_2a` / `decide_3a` do not apply.
     expected_agent_ids = sorted(s["agent_id"] for s in slice_plan)
     actual_agent_ids = sorted(a["agent_id"] for a in agents)
-    if actual_agent_ids != expected_agent_ids:
-        raise ValueError(
-            "agent reports do not align with slice_plan: expected agent_ids "
-            f"{expected_agent_ids}, got {actual_agent_ids}"
-        )
+    if len(actual_agent_ids) != len(set(actual_agent_ids)):
+        # Duplicate agent_ids would let two agents share the same finding
+        # ID prefix (R{round}-{agent_id}-NNN), silently colliding downstream.
+        dupes = sorted({a for a in actual_agent_ids if actual_agent_ids.count(a) > 1})
+        raise ValueError(f"agent reports contain duplicate agent_id(s): {dupes}")
+    if stage in {"2a", "3a"} and block is not None:
+        if stage == "2a":
+            # For 2a, the caller passes `prior_audit == round_1a`. Accept the
+            # explicit `round_1a` kwarg too (it overrides) so callers built on
+            # top of `prior_audit` semantics don't have to thread a second
+            # name. The route function needs round_1a + round_1b.
+            r1a = round_1a if round_1a is not None else prior_audit
+            if r1a is None or round_1b is None:
+                # Keep the legacy diagnostic language so the existing
+                # "round 2a requires round-1b.json" regression test still
+                # matches; the route decision is gated by the same on-disk
+                # file as the long-standing 2a cross-round check.
+                raise ValueError(
+                    "round 2a requires round-1b.json (the prior round-1b settle "
+                    "file, source of the accepted findings 2a verifies) on disk"
+                )
+            decision = decide_2a(block, r1a, round_1b)
+        else:  # stage == "3a"
+            # For 3a, `prior_audit == round_2a`; `round_1a` must come in
+            # separately because `decide_3a` needs every prior envelope.
+            if round_1a is None or round_1b is None or round_2a is None or round_2b is None:
+                raise ValueError(
+                    "stage 3a route decision requires round-1a, round-1b, "
+                    "round-2a, and round-2b on disk"
+                )
+            decision = decide_3a(block, round_1a, round_1b, round_2a, round_2b)
+        expected = sorted(decision.selected_slices)
+        if actual_agent_ids != expected:
+            missing = sorted(set(expected) - set(actual_agent_ids))
+            extra = sorted(set(actual_agent_ids) - set(expected))
+            scope_label = decision.scope
+            reason_label = (
+                f" (fallback: {','.join(decision.fallback_reasons)})"
+                if decision.scope == "broad" and decision.fallback_reasons
+                else ""
+            )
+            raise ValueError(
+                f"Route decision is {scope_label} (slices {expected}{reason_label}); "
+                f"submission covers slices {actual_agent_ids}. Missing: {missing}. "
+                f"Extra: {extra}. Add or remove the named sub-agent entries to match "
+                "the route decision."
+            )
+    else:
+        # 1a or callers without route context — preserve today's strict
+        # slice-plan match. Without it, a malformed 1a author payload could
+        # ship a schema-valid envelope whose finding IDs collide.
+        if actual_agent_ids != expected_agent_ids:
+            raise ValueError(
+                "agent reports do not align with slice_plan: expected agent_ids "
+                f"{expected_agent_ids}, got {actual_agent_ids}"
+            )
     for a in agents:
         a.setdefault("round_1_verifications", [])
     _assign_finding_ids(round_num, agents)
@@ -181,6 +243,140 @@ def _build_audit_envelope(
     }
 
 
+def _build_lineage_row_1b(
+    finding_id: str,
+    audit_findings_by_id: dict[str, dict],
+    adjudication_by_id: dict[str, dict],
+    changelog_by_id: dict[str, dict],
+    slice_plan: list[dict],
+    valid_agent_ids: set[int],
+) -> tuple[dict | None, str | None]:
+    """Build a 1b LineageEntry for one accepted finding, or return
+    (None, reason) when author fields are missing or invalid.
+
+    `reason` is the message body for a LINEAGE_INCOMPLETE marker (no newline).
+    The writer surfaces the marker on stderr and OMITS the row from
+    `finding_lineage`; it does NOT reject the settle. Spec §3.3 deliberately
+    keeps lineage emission best-effort so an author oversight cannot block a
+    settle that is otherwise valid.
+    """
+    adj = adjudication_by_id[finding_id]
+    fc = adj.get("fix_criterion")
+    vt = adj.get("verification_target")
+    if not fc:
+        return None, f"{finding_id}: missing fix_criterion"
+    if not vt:
+        return None, f"{finding_id}: missing verification_target"
+    entry = changelog_by_id.get(finding_id)
+    if entry is None or "additional_affected_slices" not in entry:
+        return None, f"{finding_id}: missing additional_affected_slices on changelog"
+    extras = entry["additional_affected_slices"]
+    bad = [aid for aid in extras if aid not in valid_agent_ids]
+    if bad:
+        return (
+            None,
+            f"{finding_id}: additional_affected_slices references unknown agent_id(s) {bad}",
+        )
+
+    finding = audit_findings_by_id[finding_id]
+    origin_agent_id = int(finding_id.split("-")[1])
+    origin_slice = next(s["concern"] for s in slice_plan if s["agent_id"] == origin_agent_id)
+    affected = sorted({origin_agent_id, *extras})
+    return (
+        {
+            "lineage_id": f"L-1b-{finding_id}",
+            "original_finding_id": finding_id,
+            "originating_stage": "1a",
+            "originating_agent_id": origin_agent_id,
+            "originating_slice": origin_slice,
+            "affected_location": finding["location"],
+            "affected_slices": affected,
+            "fix_criterion": fc,
+            "verification_target": vt,
+            "prior_lineage_id": None,
+            "latest_verification": None,
+        },
+        None,
+    )
+
+
+def _build_lineage_2b(
+    payload: dict,
+    paired_audit: dict,
+    prior_settle: dict | None,
+    audit_findings_by_id: dict[str, dict],
+    adjudication_by_id: dict[str, dict],
+    changelog_by_id: dict[str, dict],
+    slice_plan: list[dict],
+    valid_agent_ids: set[int],
+    accepted_finding_ids: list[str],
+) -> list[dict]:
+    """2b finding_lineage = carry-forward 1b rows + fresh rows per accepted 2a
+    finding.
+
+    Carry-forward: clone each 1b row, mint a new lineage_id (`L-2b-...`), set
+    `prior_lineage_id` to the 1b row's id, populate `latest_verification` from
+    the matching 2a `round_1_verifications` entry. If 2a has no matching
+    verification, omit the row and emit `LINEAGE_INCOMPLETE: <fid>: missing
+    2a verification` on stderr (defensive — normally a 2a author oversight
+    that should have been caught by the 2a cross-round check, but we degrade
+    gracefully rather than crashing the settle).
+
+    Fresh rows: one per accepted 2a finding whose author fields are complete.
+    Each is built exactly like a 1b row (`_build_lineage_row_1b`), except
+    `originating_stage = "2a"`, `lineage_id` starts with `L-2b-`, and
+    `prior_lineage_id`/`latest_verification` are both null.
+    """
+    lineage: list[dict] = []
+
+    # 1) Carry-forward — every 1b lineage row becomes a 2b row, with
+    #    latest_verification populated from the paired 2a verifications.
+    prior_lineage = (prior_settle or {}).get("finding_lineage", []) or []
+    verifications_by_fid: dict[str, dict] = {}
+    for agent in paired_audit["agents"]:
+        for v in agent.get("round_1_verifications", []):
+            verifications_by_fid[v["round_1_finding_id"]] = v
+    for row in prior_lineage:
+        fid = row["original_finding_id"]
+        v = verifications_by_fid.get(fid)
+        if v is None:
+            # 2a normally produces one verification per accepted 1b finding
+            # (enforced by `_cross_round_check_2a`), so a miss here means the
+            # 1b lineage went out of sync with 2a — most often because the
+            # 1b file was hand-edited or paste-imported separately. Surface
+            # it loudly and skip rather than emitting a partial carry-forward
+            # row.
+            print(f"LINEAGE_INCOMPLETE: {fid}: missing 2a verification", file=sys.stderr)
+            continue
+        new_row = dict(row)
+        new_row["lineage_id"] = row["lineage_id"].replace("L-1b-", "L-2b-", 1)
+        new_row["prior_lineage_id"] = row["lineage_id"]
+        new_row["latest_verification"] = {"status": v["status"], "evidence": v["evidence"]}
+        lineage.append(new_row)
+
+    # 2) Fresh rows — one per accepted 2a finding. Reuses the same
+    #    completeness checks as the 1b builder; an accepted 2a finding with
+    #    missing author fields is omitted with a LINEAGE_INCOMPLETE marker
+    #    rather than blocking the settle (spec §3.3 best-effort contract).
+    for fid in accepted_finding_ids:
+        row, reason = _build_lineage_row_1b(
+            fid,
+            audit_findings_by_id,
+            adjudication_by_id,
+            changelog_by_id,
+            slice_plan,
+            valid_agent_ids,
+        )
+        if row is None:
+            print(f"LINEAGE_INCOMPLETE: {reason}", file=sys.stderr)
+            continue
+        row["lineage_id"] = f"L-2b-{fid}"
+        row["originating_stage"] = "2a"
+        lineage.append(row)
+
+    return lineage
+
+
 def _build_settle_envelope(
     slug: str,
     artifact_type: str,
@@ -188,6 +384,9 @@ def _build_settle_envelope(
     payload: dict,
     paired_audit: dict,
     prior_settle: dict | None,
+    *,
+    mode: str | None = None,
+    review_profile: str | None = None,
 ) -> dict:
     stage = payload["stage"]
     round_num = STAGE_TO_ROUND[stage]
@@ -355,6 +554,43 @@ def _build_settle_envelope(
         "changelog": payload["changelog"],
         "self_review": payload["self_review"],
     }
+    # Spec §3.3: finding_lineage is emitted in fast / profile-aware mode only.
+    # `mode == "fast"` alone is not sufficient — a fast block with no profile
+    # is legacy-shaped state and the writer must not synthesize lineage for
+    # it. Thorough envelopes never carry the field at all (legacy parity).
+    if mode == "fast" and review_profile is not None and stage in {"1b", "2b"}:
+        adjudication_by_id = {a["finding_id"]: a for a in payload["adjudications"]}
+        changelog_by_id = {c["finding_id"]: c for c in payload["changelog"]}
+        slice_plan = paired_audit["slice_plan"]
+        valid_agent_ids = {s["agent_id"] for s in slice_plan}
+        lineage: list[dict] = []
+        if stage == "1b":
+            for fid in accepted_finding_ids:
+                row, reason = _build_lineage_row_1b(
+                    fid,
+                    audit_findings_by_id,
+                    adjudication_by_id,
+                    changelog_by_id,
+                    slice_plan,
+                    valid_agent_ids,
+                )
+                if row is None:
+                    print(f"LINEAGE_INCOMPLETE: {reason}", file=sys.stderr)
+                    continue
+                lineage.append(row)
+        else:  # stage == "2b"; full implementation lands in Task 6
+            lineage = _build_lineage_2b(
+                payload,
+                paired_audit,
+                prior_settle,
+                audit_findings_by_id,
+                adjudication_by_id,
+                changelog_by_id,
+                slice_plan,
+                valid_agent_ids,
+                accepted_finding_ids,
+            )
+        envelope["finding_lineage"] = lineage
     if stage == "3b":
         envelope["final_status"] = (
             "READY_FOR_IMPLEMENTATION"
@@ -517,8 +753,24 @@ def _auto_settle(
         "changelog": [],
         "self_review": [],
     }
+    block = state[artifact_type]
+    # For a 2a→2b auto-settle the prior settle (round-1b.json) is the source
+    # of carry-forward lineage rows. Without this read, the auto-settled 2b
+    # would silently drop every 1b lineage row, breaking the spec §3.3
+    # contract that every accepted finding carries forward until it lands in
+    # the final-verification envelope. (1a→1b never has a prior settle.)
+    prior_settle = None
+    if settle_stage == "2b":
+        prior_settle = _read_optional(artifact_dir / "round-1b.json")
     envelope = _build_settle_envelope(
-        slug, artifact_type, artifact_path, payload, audit_envelope, None
+        slug,
+        artifact_type,
+        artifact_path,
+        payload,
+        audit_envelope,
+        prior_settle,
+        mode=block.get("mode"),
+        review_profile=block.get("review_profile"),
     )
     source_hash = compute_content_hash(artifact_dir / f"round-{audit_stage}.json")
     agent_count = len(audit_envelope["agents"])
@@ -543,7 +795,6 @@ def _auto_settle(
     # boundary and the caller reports AUTO_SETTLE_FAILED. After this point the
     # only operation that can fail is the state.json write itself.
     atomic_write(artifact_dir / f"round-{settle_stage}.json", body)
-    block = state[artifact_type]
     block["completed_rounds"] = sorted({*block["completed_rounds"], settle_stage})
     block["current_stage"] = NEXT_STAGE[settle_stage]
     block["last_updated_at"] = envelope["emitted_at"]
@@ -665,7 +916,11 @@ def main() -> int:
         return 0
 
     paired_audit_path = {"1b": "1a", "2b": "2a", "3b": "3a"}.get(stage)
-    prior_settle_path = {"2a": "1b", "3a": "2b"}.get(stage)
+    # 2b needs round-1b.json so the carry-forward lineage builder can clone
+    # 1b rows and populate latest_verification from 2a's round_1_verifications
+    # (spec §3.3). Stage 2a/3a still need their own prior settle for cross-
+    # round invariant checks; 2b reads it only as a lineage source.
+    prior_settle_path = {"2a": "1b", "2b": "1b", "3a": "2b"}.get(stage)
     prior_audit_path = {"2a": "1a", "3a": "2a"}.get(stage)
 
     paired_audit = (
@@ -684,10 +939,29 @@ def main() -> int:
         else None
     )
 
+    # Route-aware audit cardinality (issue #22, Task 8) needs every prior
+    # envelope that `cr_routing.decide_{2a,3a}` consumes. For stage 2a, the
+    # writer already loads round-1a as `prior_audit`; we just additionally
+    # load round-1b. For stage 3a, `prior_audit` is round-2a, so round-1a /
+    # round-1b / round-2b must all be loaded explicitly.
+    round_1a_env = _read_optional(artifact_dir / "round-1a.json") if stage == "3a" else None
+    round_1b_env = _read_optional(artifact_dir / "round-1b.json") if stage in {"2a", "3a"} else None
+    round_2a_env = _read_optional(artifact_dir / "round-2a.json") if stage == "3a" else None
+    round_2b_env = _read_optional(artifact_dir / "round-2b.json") if stage == "3a" else None
+
     try:
         if stage in AUDIT_STAGES:
             envelope = _build_audit_envelope(
-                args.slug, args.artifact_type, args.artifact_path, payload, prior_audit
+                args.slug,
+                args.artifact_type,
+                args.artifact_path,
+                payload,
+                prior_audit,
+                block=block,
+                round_1a=round_1a_env,
+                round_1b=round_1b_env,
+                round_2a=round_2a_env,
+                round_2b=round_2b_env,
             )
         else:
             if paired_audit is None:
@@ -699,6 +973,8 @@ def main() -> int:
                 payload,
                 paired_audit,
                 prior_settle,
+                mode=block.get("mode"),
+                review_profile=block.get("review_profile"),
             )
     except ValueError as e:
         return err(str(e))

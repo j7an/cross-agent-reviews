@@ -17,9 +17,11 @@ job.
 - `${ARTIFACT_TYPE}` — "spec" or "plan"
 - `${ROUND_MISSION_TEXT}` — round-specific mission paragraph (different
   language for 1a, 2a, 3a; supplied by the round-procedure file)
-- `${PRIOR_ROUND_FINDINGS_JSON}` — for 2a only; the accepted Round 1
-  findings as a JSON array (one entry per finding the sub-agent must
-  verify); empty `[]` for 1a and 3a
+- `${PRIOR_ROUND_PAYLOAD_JSON}` — required for 2a and 3a.
+  - **Broad routing:** an array of accepted prior-round findings, one entry
+    per finding the sub-agent must verify; empty `[]` for 1a.
+  - **Narrow routing (fast / profile-aware):** a lineage bundle (see
+    §Lineage-bundle payload below).
 
 ## Sub-agent prompt template
 
@@ -32,9 +34,24 @@ ${ROUND_MISSION_TEXT}
 
 The artifact to review is at: ${ARTIFACT_PATH} (${ARTIFACT_TYPE}).
 
-For Round 2a only: verify each accepted Round 1 finding listed below was
-resolved by the author's edits, and emit one verification per finding.
-${PRIOR_ROUND_FINDINGS_JSON}
+Prior-round payload (interpret per stage and shape):
+
+- Round 2a, broad routing — the payload is an ARRAY of accepted Round 1
+  findings. Verify each one was resolved by the author's edits and emit
+  one verification per finding.
+- Round 2a, narrow routing — the payload is an OBJECT (the lineage
+  bundle described in §Lineage-bundle payload below). Verify the rows
+  in `verifications_for_this_slice` and scan the regions named in
+  `impacts_for_this_slice` for new findings the other slice's edits may
+  have introduced.
+- Round 3a, broad routing — the payload is an empty array `[]`. Do not
+  re-verify prior findings; perform a strict-blocker scan over your
+  whole slice.
+- Round 3a, narrow routing — the payload is the same lineage-bundle
+  OBJECT. Re-scan the regions described by
+  `verifications_for_this_slice` and `impacts_for_this_slice` for true
+  blockers only; do not re-verify Round 1/2 findings.
+${PRIOR_ROUND_PAYLOAD_JSON}
 
 Return a status report following the protocol in
 [../_shared/status-protocol.md](../_shared/status-protocol.md). The
@@ -58,3 +75,36 @@ plan has 6 entries (5 internal + 1 fixed cross-artifact). For
 the sub-agent's primary input via the
 [`cross-artifact-slice.md`](cross-artifact-slice.md) addendum. See that
 file for the full per-classification rubric.
+
+## Lineage-bundle payload
+
+Under narrow routing (fast / profile-aware mode), `${PRIOR_ROUND_PAYLOAD_JSON}`
+is an object of this shape:
+
+```json
+{
+  "verifications_for_this_slice": [LineageEntry, ...],
+  "impacts_for_this_slice":       [LineageEntry, ...],
+  "global_summary": {
+    "accepted_findings_count": <int>,
+    "all_affected_slices":     [<int>, ...],
+    "edit_locations_compact":  [<string>, ...]
+  }
+}
+```
+
+- `verifications_for_this_slice` — lineage rows whose
+  `originating_agent_id == ${SLICE_AGENT_ID}`. Verify each one (2a) or
+  re-scan for blockers in the same region (3a).
+- `impacts_for_this_slice` — lineage rows whose `affected_slices` includes
+  `${SLICE_AGENT_ID}` AND `originating_agent_id != ${SLICE_AGENT_ID}`. Scan
+  the affected region for new findings the other slice's edits may have
+  introduced.
+- `global_summary` — present only when `${SLICE_AGENT_ID}` is the
+  global-coherence slice or the cross-artifact slice. One-line edit summary
+  per accepted finding; keeps the payload bounded by edit count, not
+  artifact size. `accepted_findings_count` equals the number of lineage rows
+  in this bundle (one per accepted finding whose edits are represented), so
+  it matches `edit_locations_compact` 1:1 — for a 3a bundle this includes
+  both the 1b carry-forward rows and the fresh 2a rows, not just the
+  2b-accepted subset.

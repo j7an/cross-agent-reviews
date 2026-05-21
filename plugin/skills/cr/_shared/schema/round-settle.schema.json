@@ -75,6 +75,10 @@
         "source_round_hash": {"$ref": "#/$defs/content_hash"},
         "reason": {"type": "string", "minLength": 1}
       }
+    },
+    "finding_lineage": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/lineage_entry"}
     }
   },
   "allOf": [
@@ -113,9 +117,59 @@
     {
       "if": {"properties": {"stage": {"const": "3b"}}},
       "then": {"not": {"required": ["auto_settled"]}}
+    },
+    {
+      "if": {"properties": {"stage": {"const": "3b"}}},
+      "then": {"not": {"required": ["finding_lineage"]}}
     }
   ],
   "$defs": {
-    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "lineage_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lineage_id", "original_finding_id", "originating_stage",
+        "originating_agent_id", "originating_slice", "affected_location",
+        "affected_slices", "fix_criterion", "verification_target",
+        "prior_lineage_id", "latest_verification"
+      ],
+      "properties": {
+        "lineage_id": {"type": "string", "pattern": "^L-(1b|2b)-R[123]-[1-6]-[0-9]{3}$"},
+        "original_finding_id": {"type": "string", "pattern": "^R[123]-[1-6]-[0-9]{3}$"},
+        "originating_stage": {"type": "string", "enum": ["1a", "2a"]},
+        "originating_agent_id": {"type": "integer", "minimum": 1, "maximum": 6},
+        "originating_slice": {"type": "string", "minLength": 1},
+        "affected_location": {"type": "string", "minLength": 1},
+        "affected_slices": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1, "maximum": 6},
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "fix_criterion": {"type": "string", "minLength": 1},
+        "verification_target": {"type": "string", "minLength": 1},
+        "prior_lineage_id": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^L-(1b|2b)-R[123]-[1-6]-[0-9]{3}$"}
+          ]
+        },
+        "latest_verification": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "evidence"],
+              "properties": {
+                "status": {"type": "string", "enum": ["resolved", "partially_resolved", "not_resolved"]},
+                "evidence": {"type": "string", "minLength": 1}
+              }
+            }
+          ]
+        }
+      }
+    }
   }
 }

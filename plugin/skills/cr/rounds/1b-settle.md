@@ -27,7 +27,13 @@ Use the local file. The 1a findings are at `.cross-agent-reviews/<slug>/<artifac
 For each finding, decide accept or reject. Capture:
 
 - Adjudication record `{finding_id, verdict, reasoning}`.
-- For `accept`: edit the artifact in place to address the finding (minimum-correction principle), and add a Changelog entry `{finding_id, change_made}` describing the actual edit.
+- For `accept`: edit the artifact in place to address the finding (minimum-correction principle), and add a Changelog entry `{finding_id, change_made, additional_affected_slices}` describing the actual edit. `additional_affected_slices` is an array of integer agent_ids for cross-slice edits; explicit empty `[]` is allowed and is treated as "no cross-slice impact". Absence triggers fallback reason `F2-2`.
+- For `accept`: additionally capture two strings on the adjudication record
+  in fast / profile-aware mode:
+  - `fix_criterion`: the criterion by which the fix should be judged.
+  - `verification_target`: the artifact location the verifier should re-read.
+  These fields are optional in legacy / thorough mode; their absence in fast
+  mode triggers fallback reason `F2-1` on the next route decision.
 - For `reject`: justify in `rejection_reason`.
 - Add a self-review entry `{finding_id, resolved, over_specified, introduces_contradiction, notes}`.
 
@@ -47,6 +53,12 @@ For each finding, decide accept or reject. Capture:
 > `adjudications[verdict == "reject"]` joined with the matching audit
 > findings; you supply only the empty `[]` here. If you want to attach
 > richer rejection reasoning, the script copies it from the adjudication.
+
+> The writer derives `finding_lineage` from your adjudications + changelog
+> when the artifact block is in **fast / profile-aware mode**
+> (`mode == 'fast'` AND `review_profile` set). You do not author this field
+> directly. In thorough mode, or in a fast block whose profile is unset,
+> `finding_lineage` is omitted entirely.
 
 ## 4. Write
 

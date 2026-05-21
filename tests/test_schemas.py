@@ -495,3 +495,115 @@ def test_settle_auto_settled_requires_all_fields(schema_dir, registry):
     env = _base_settle("1b")
     env["auto_settled"] = {"trigger": "clean_audit_zero_findings", "source_stage": "1a"}
     _expect_invalid(schema_dir, registry, "round-settle.schema.json", env)
+
+
+# --- finding-lineage optional schema fields (issue #22) ---
+
+
+def _minimal_1b_envelope():
+    return _base_settle("1b")
+
+
+def _minimal_3b_envelope():
+    env = _base_settle("3b")
+    env["final_status"] = "READY_FOR_IMPLEMENTATION"
+    return env
+
+
+def _minimal_lineage_entry():
+    return {
+        "lineage_id": "L-1b-R1-1-001",
+        "original_finding_id": "R1-1-001",
+        "originating_stage": "1a",
+        "originating_agent_id": 1,
+        "originating_slice": "Data model",
+        "affected_location": "Section 4.2 line 17",
+        "affected_slices": [1],
+        "fix_criterion": "criterion",
+        "verification_target": "target",
+        "prior_lineage_id": None,
+        "latest_verification": None,
+    }
+
+
+def test_adjudication_optional_lineage_fields_accepted(schema_dir, registry):
+    with_fields = {
+        "finding_id": "R1-1-001",
+        "verdict": "accept",
+        "reasoning": "edit applied",
+        "fix_criterion": "the audit log line is emitted with all five fields",
+        "verification_target": "section 4.2",
+    }
+    _validate(schema_dir, registry, "adjudication.schema.json", with_fields)
+    without_fields = {
+        "finding_id": "R1-1-001",
+        "verdict": "accept",
+        "reasoning": "edit applied",
+    }
+    _validate(schema_dir, registry, "adjudication.schema.json", without_fields)
+
+
+def test_adjudication_lineage_fields_min_length_enforced(schema_dir, registry):
+    base = {"finding_id": "R1-1-001", "verdict": "accept", "reasoning": "ok"}
+    _expect_invalid(schema_dir, registry, "adjudication.schema.json", {**base, "fix_criterion": ""})
+    _expect_invalid(
+        schema_dir, registry, "adjudication.schema.json", {**base, "verification_target": ""}
+    )
+
+
+def test_changelog_additional_affected_slices_optional_and_validated(schema_dir, registry):
+    base = {"finding_id": "R1-1-001", "change_made": "added the missing section"}
+    _validate(schema_dir, registry, "changelog-entry.schema.json", base)
+    _validate(
+        schema_dir,
+        registry,
+        "changelog-entry.schema.json",
+        {**base, "additional_affected_slices": []},
+    )
+    _validate(
+        schema_dir,
+        registry,
+        "changelog-entry.schema.json",
+        {**base, "additional_affected_slices": [1, 3, 5]},
+    )
+    for bad in ([0], [7], ["1"], [1, 1]):
+        _expect_invalid(
+            schema_dir,
+            registry,
+            "changelog-entry.schema.json",
+            {**base, "additional_affected_slices": bad},
+        )
+
+
+def test_round_settle_optional_finding_lineage_accepted(schema_dir, registry):
+    base = _minimal_1b_envelope()
+    _validate(schema_dir, registry, "round-settle.schema.json", base)
+    _validate(schema_dir, registry, "round-settle.schema.json", {**base, "finding_lineage": []})
+
+
+def test_round_settle_finding_lineage_forbidden_on_3b(schema_dir, registry):
+    envelope = _minimal_3b_envelope()
+    _expect_invalid(
+        schema_dir,
+        registry,
+        "round-settle.schema.json",
+        {**envelope, "finding_lineage": []},
+    )
+
+
+def test_lineage_entry_pattern_enforced(schema_dir, registry):
+    base = _minimal_1b_envelope()
+    good_entry = _minimal_lineage_entry()
+    bad_entry = {**good_entry, "lineage_id": "L-X-R1-1-001"}
+    _validate(
+        schema_dir,
+        registry,
+        "round-settle.schema.json",
+        {**base, "finding_lineage": [good_entry]},
+    )
+    _expect_invalid(
+        schema_dir,
+        registry,
+        "round-settle.schema.json",
+        {**base, "finding_lineage": [bad_entry]},
+    )
