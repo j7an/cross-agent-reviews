@@ -977,6 +977,73 @@ def test_narrow_2a_envelope_paste_imports_under_route_decision(tmp_path):
     assert round_2a_b == round_2a_path_a.read_bytes(), "narrow 2a must round-trip byte-identical"
 
 
+def test_paste_rejects_1b_with_tampered_lineage_affected_slices(tmp_path):
+    """T34: a fast/patch 1b paste whose finding_lineage row shrinks
+    affected_slices below what the writer would have derived from the
+    same adjudications + changelog must be rejected. Without this gate,
+    a hand-edited or maliciously crafted 1b paste can silently narrow
+    Round 1 evidence on the receiving host and let decide_3a skip a slice
+    the original author edited."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    assert _init_fast_patch(host_a).returncode == 0
+    assert _write_1a_fast_patch(host_a).returncode == 0
+    assert _write_1b_fast_patch_accept(host_a).returncode == 0
+
+    round_1a_bytes = (host_a / ".cross-agent-reviews/foo/spec/round-1a.json").read_bytes()
+    settled_1b = json.loads((host_a / ".cross-agent-reviews/foo/spec/round-1b.json").read_bytes())
+    # Sanity: writer emitted [1, 3] for R1-1-001 (origin 1 + additional 3).
+    assert settled_1b["finding_lineage"][0]["affected_slices"] == [1, 3]
+    # Tamper: shrink to [1]. Schema still validates (non-empty array of ints).
+    settled_1b["finding_lineage"][0]["affected_slices"] = [1]
+    tampered_1b = json.dumps(settled_1b)
+
+    assert _init_fast_patch(host_b).returncode == 0
+    paste_1a = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_1a_bytes.decode())
+    assert paste_1a.returncode == 0, paste_1a.stderr
+
+    paste_1b = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=tampered_1b)
+    assert paste_1b.returncode != 0
+    assert "lineage" in paste_1b.stderr.lower()
+
+
+def test_paste_rejects_1b_with_missing_lineage_row_for_accepted_finding(tmp_path):
+    """T35: a fast/patch 1b paste whose finding_lineage omits an accepted
+    finding (with complete adjudication + changelog) must be rejected. The
+    writer would emit a row; a paste that drops it produces lineage drift
+    that decide_3a downstream cannot detect."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    assert _init_fast_patch(host_a).returncode == 0
+    assert _write_1a_fast_patch(host_a).returncode == 0
+    assert _write_1b_fast_patch_accept(host_a).returncode == 0
+
+    round_1a_bytes = (host_a / ".cross-agent-reviews/foo/spec/round-1a.json").read_bytes()
+    settled_1b = json.loads((host_a / ".cross-agent-reviews/foo/spec/round-1b.json").read_bytes())
+    # Drop the lineage row entirely. Adjudications + changelog still
+    # accept R1-1-001 with complete author fields.
+    settled_1b["finding_lineage"] = []
+    tampered_1b = json.dumps(settled_1b)
+
+    assert _init_fast_patch(host_b).returncode == 0
+    paste_1a = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_1a_bytes.decode())
+    assert paste_1a.returncode == 0, paste_1a.stderr
+
+    paste_1b = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=tampered_1b)
+    assert paste_1b.returncode != 0
+    assert "lineage" in paste_1b.stderr.lower()
+
+
 def test_route_decision_identical_across_hosts(tmp_path):
     """T32: same fast/patch state on both hosts; running
     `cr_state_read.py --route-decision --stage 2a` on each emits byte-identical

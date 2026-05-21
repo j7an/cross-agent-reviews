@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -36,6 +38,8 @@ from _cr_lib import (
 from cr_routing import decide_2a, decide_3a
 from cr_state_write import (
     SETTLE_STAGES,
+    _build_lineage_2b,
+    _build_lineage_row_1b,
     _check_slice_plan_frozen,
     _check_verification_set,
     _cross_round_check_2a,
@@ -399,6 +403,15 @@ def _paste_cross_round_invariants(
         err = _settle_paste_invariants(envelope, paired_audit)
         if err is not None:
             return err
+        if stage in {"1b", "2b"}:
+            prior_settle_for_lineage = (
+                _read_optional(artifact_dir / "round-1b.json") if stage == "2b" else None
+            )
+            err = _check_settle_lineage_parity(
+                envelope, paired_audit, prior_settle_for_lineage, block
+            )
+            if err is not None:
+                return err
     elif stage == "3c":
         paired_3b = _read_optional(artifact_dir / "round-3b.json")
         if paired_3b is None:
@@ -599,6 +612,93 @@ def _settle_paste_invariants(envelope: dict, paired_audit: dict) -> str | None:
                 f"final_status={envelope.get('final_status')!r} diverges "
                 f"from accepted_findings shape (expected {expected_final!r})"
             )
+    return None
+
+
+def _check_settle_lineage_parity(
+    envelope: dict,
+    paired_audit: dict,
+    prior_settle: dict | None,
+    block: dict | None,
+) -> str | None:
+    """Replay the writer's `finding_lineage` derivation on paste-import.
+
+    In fast / profile-aware mode (`mode == "fast"` AND
+    `review_profile is not None`), `cr_state_write.py::_build_settle_envelope`
+    emits `finding_lineage` for 1b/2b settle rounds. Paste-import previously
+    accepted any schema-valid lineage (including empty, shrunken, or
+    fabricated rows), letting cross-host state diverge from the canonical
+    writer output and breaking the F3-5 narrow-routing safety guarantee.
+    Rebuild the expected lineage from the same inputs the local writer would
+    have used and reject any mismatch.
+
+    Returns None when no parity check applies (legacy / thorough mode, or
+    block context missing). The build helpers emit `LINEAGE_INCOMPLETE`
+    markers on stderr by design; suppress them here — the original write
+    already surfaced them, and replay shouldn't double-emit.
+    """
+    if block is None:
+        return None
+    if block.get("mode") != "fast" or block.get("review_profile") is None:
+        return None
+    if envelope["stage"] not in {"1b", "2b"}:
+        return None
+    if "finding_lineage" not in envelope:
+        return (
+            "finding_lineage absent under fast / profile-aware mode "
+            "(writer would emit the field, even if empty)"
+        )
+
+    audit_findings_by_id = {
+        f["id"]: f for agent in paired_audit["agents"] for f in agent["findings"]
+    }
+    adjudication_by_id = {a["finding_id"]: a for a in envelope["adjudications"]}
+    changelog_by_id = {c["finding_id"]: c for c in envelope["changelog"]}
+    slice_plan = paired_audit["slice_plan"]
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    accepted_finding_ids = [
+        a["finding_id"] for a in envelope["adjudications"] if a["verdict"] == "accept"
+    ]
+
+    expected: list[dict] = []
+    with contextlib.redirect_stderr(io.StringIO()):
+        if envelope["stage"] == "1b":
+            for fid in accepted_finding_ids:
+                row, _reason = _build_lineage_row_1b(
+                    fid,
+                    audit_findings_by_id,
+                    adjudication_by_id,
+                    changelog_by_id,
+                    slice_plan,
+                    valid_agent_ids,
+                )
+                if row is None:
+                    continue
+                expected.append(row)
+        else:  # stage == "2b"
+            payload = {
+                "adjudications": envelope["adjudications"],
+                "changelog": envelope["changelog"],
+                "self_review": envelope["self_review"],
+            }
+            expected = _build_lineage_2b(
+                payload,
+                paired_audit,
+                prior_settle,
+                audit_findings_by_id,
+                adjudication_by_id,
+                changelog_by_id,
+                slice_plan,
+                valid_agent_ids,
+                accepted_finding_ids,
+            )
+
+    if envelope["finding_lineage"] != expected:
+        return (
+            "finding_lineage diverges from the writer-derived expectation "
+            "(rows, affected_slices, lineage_id, or order do not match what "
+            "_build_settle_envelope would have produced from the same inputs)"
+        )
     return None
 
 
