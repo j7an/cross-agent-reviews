@@ -509,6 +509,27 @@ def test_decide_3a_carry_forward_missing_latest_verification_falls_back_F3_5(): 
     assert "F3-5" in decision.fallback_reasons
 
 
+def test_decide_3a_accepted_1b_finding_without_lineage_falls_back_F3_5():  # noqa: N802
+    # Fail-closed: if 1b accepted a finding but no lineage row was emitted for
+    # it (writer best-effort skip on LINEAGE_INCOMPLETE), decide_3a must fall
+    # back broad. Otherwise narrow 3a can skip slices that Round 1 edited.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r1b = _round_1b(
+        accepted=[
+            ("R1-1-001", {"fix_criterion": "c", "verification_target": "t"}),
+        ],
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+    )
+    # writer skipped 1b lineage row emission for R1-1-001 (finding_lineage absent).
+    r2b = _round_2b(finding_lineage=[])
+    decision = decide_3a(state, _round_1a(plan), r1b, _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
 def test_decide_3a_inherits_F2_like_reasons_as_F3_1():  # noqa: N802
     plan = _slice_plan_spec()
     state = _state(mode="fast", review_profile="patch")["spec"]

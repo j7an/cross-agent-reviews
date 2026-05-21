@@ -206,8 +206,17 @@ def decide_3a(
             reasons.append("F3-4")
             break
 
-    # F3-5: every accepted 1b lineage row must carry forward into 2b with
-    # latest_verification populated.
+    # F3-5: every accepted 1b finding must have a 1b lineage row, and every
+    # 1b lineage row must carry forward into 2b with latest_verification
+    # populated. The accepted-without-lineage check fails closed when the
+    # writer skipped lineage emission (LINEAGE_INCOMPLETE stderr) for an
+    # accepted finding — otherwise an empty lineage set would make the
+    # carry-forward check vacuously pass and narrow 3a could skip a slice
+    # Round 1 actually edited.
+    accepted_1b_ids = {f["id"] for f in round_1b.get("accepted_findings", [])}
+    lineage_1b_origins = {row["original_finding_id"] for row in round_1b.get("finding_lineage", [])}
+    if accepted_1b_ids - lineage_1b_origins:
+        reasons.append("F3-5")
     lineage_1b_ids = {row["lineage_id"] for row in round_1b.get("finding_lineage", [])}
     lineage_2b = round_2b.get("finding_lineage", [])
     carried_priors = {row.get("prior_lineage_id") for row in lineage_2b}
