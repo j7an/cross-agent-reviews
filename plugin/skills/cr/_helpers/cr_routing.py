@@ -46,15 +46,30 @@ def identify_mandatory_slices(slice_plan: list[dict]) -> dict:
         )
     cross = fixed[0]["agent_id"] if fixed else None
     non_fixed = [s["agent_id"] for s in slice_plan if not s.get("is_fixed")]
-    global_coh = max(non_fixed) if non_fixed else None
+    if not non_fixed:
+        global_coh = None
+    else:
+        top = max(non_fixed)
+        # Defence-in-depth against a slice_plan with duplicate agent_ids: the
+        # round-audit schema does not enforce agent_id uniqueness, so a
+        # paste-imported or hand-edited plan can carry two entries at the
+        # highest non-fixed id. That makes the global-coherence slice
+        # ambiguous; signal "undetectable" so callers fall back broad
+        # (F2-7 / F3-1) rather than silently picking one.
+        global_coh = top if non_fixed.count(top) == 1 else None
     return {"global_coherence_slice": global_coh, "cross_artifact_slice": cross}
 
 
 def _broad(plan, reasons):
-    """Build a broad RouteDecision over every slice in plan."""
+    """Build a broad RouteDecision over every slice in plan.
+
+    Deduplicates agent_ids in `selected_slices`: the round-audit schema does
+    not enforce uniqueness, so a paste-imported plan with duplicate entries
+    must not surface duplicate ids to the dispatcher.
+    """
     return RouteDecision(
         scope="broad",
-        selected_slices=tuple(sorted(s["agent_id"] for s in plan)),
+        selected_slices=tuple(sorted({s["agent_id"] for s in plan})),
         fallback_reasons=tuple(sorted(set(reasons))),
     )
 
@@ -234,10 +249,28 @@ def decide_3a(
     }
     if accepted_2b_ids - lineage_2b_fresh_origins:
         reasons.append("F3-5")
+    changelog_2b_by_fid = {entry["finding_id"]: entry for entry in round_2b.get("changelog", [])}
     for row in lineage_2b:
         if row.get("originating_stage") == "1a" and row.get("latest_verification") is None:
             reasons.append("F3-5")
             break
+        # Fresh 2a-origin row: affected_slices must equal the set union of
+        # {origin_agent_id} and changelog.additional_affected_slices. A
+        # paste-imported or hand-edited row that shrinks the set would
+        # silently skip a slice the 2b author declared affected.
+        if row.get("originating_stage") == "2a":
+            fid = row.get("original_finding_id", "")
+            entry = changelog_2b_by_fid.get(fid)
+            if entry is not None and "additional_affected_slices" in entry:
+                try:
+                    origin = int(fid.split("-")[1])
+                except (ValueError, IndexError):
+                    origin = row.get("originating_agent_id")
+                expected = {origin, *entry["additional_affected_slices"]}
+                if set(row.get("affected_slices", [])) != expected:
+                    reasons.append("F3-5")
+                    break
+            continue
         prior_id = row.get("prior_lineage_id")
         if prior_id is None:
             continue

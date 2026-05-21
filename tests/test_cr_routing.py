@@ -630,6 +630,80 @@ def test_decide_3a_multiple_is_fixed_propagates_value_error():
         decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), _round_2b())
 
 
+def test_decide_3a_fresh_2a_lineage_shrinks_affected_slices_falls_back_F3_5():  # noqa: N802
+    # Defensive: a fresh (originating_stage=2a) lineage row's affected_slices
+    # must equal the set union of {origin_agent_id} and changelog
+    # .additional_affected_slices. A paste-imported or hand-edited 2b that
+    # shrinks the set would silently skip a slice the author declared affected.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    r2b = _round_2b(
+        accepted=[
+            ("R2-1-001", {"_severity": "gap", "fix_criterion": "c", "verification_target": "t"}),
+        ],
+        changelog=[
+            {"finding_id": "R2-1-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R2-1-001",
+                original_finding_id="R2-1-001",
+                originating_agent_id=1,
+                originating_stage="2a",
+                # changelog declared {1, 3}; row shrinks to {1}.
+                affected_slices=[1],
+                latest_verification=None,
+            ),
+        ],
+    )
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), r2b)
+    assert decision.scope == "broad"
+    assert "F3-5" in decision.fallback_reasons
+
+
+def test_identify_mandatory_slices_duplicate_highest_non_fixed_is_undetectable():
+    # Schema does not enforce agent_id uniqueness across slice_plan entries.
+    # When the highest non-fixed agent_id appears more than once, the
+    # global-coherence slice is ambiguous; identify_mandatory_slices must
+    # signal undetectable so callers fall back broad (F2-7 / F3-1).
+    plan = [
+        {"agent_id": 1, "concern": "a", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global1", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global2", "slice_definition": "x", "is_fixed": False},
+    ]
+    result = identify_mandatory_slices(plan)
+    assert result["global_coherence_slice"] is None
+    assert result["cross_artifact_slice"] is None
+
+
+def test_decide_2a_duplicate_highest_non_fixed_falls_back_F2_7():  # noqa: N802
+    plan = [
+        {"agent_id": 1, "concern": "a", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global1", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global2", "slice_definition": "x", "is_fixed": False},
+    ]
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    decision = decide_2a(state, _round_1a(plan), _round_1b())
+    assert decision.scope == "broad"
+    assert "F2-7" in decision.fallback_reasons
+    # And _broad() must dedupe selected_slices when the plan contains
+    # duplicate agent_ids.
+    assert decision.selected_slices == (1, 5)
+
+
+def test_decide_3a_duplicate_highest_non_fixed_falls_back_F3_1():  # noqa: N802
+    plan = [
+        {"agent_id": 1, "concern": "a", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global1", "slice_definition": "x", "is_fixed": False},
+        {"agent_id": 5, "concern": "global2", "slice_definition": "x", "is_fixed": False},
+    ]
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    decision = decide_3a(state, _round_1a(plan), _round_1b(), _round_2a(), _round_2b())
+    assert decision.scope == "broad"
+    assert "F3-1" in decision.fallback_reasons
+    assert decision.selected_slices == (1, 5)
+
+
 def test_decide_3a_rejected_2a_finding_does_not_expand_scope():
     plan = _slice_plan_spec()
     state = _state(mode="fast", review_profile="patch")["spec"]
