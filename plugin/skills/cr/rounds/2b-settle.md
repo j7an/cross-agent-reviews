@@ -31,13 +31,17 @@ Only the `findings` array of Round 2a's agents enters the adjudication. For each
   `{finding_id, change_made, additional_affected_slices}`.
   `additional_affected_slices` is an array of integer agent_ids for
   cross-slice edits; explicit empty `[]` is allowed and is treated as
-  "no cross-slice impact". Absence triggers fallback reason `F2-2`.
+  "no cross-slice impact". Absence triggers fallback reason `F3-1` (via
+  the 2b-side replay of F2-2) on the next 3a route decision.
 - For accept: additionally capture two strings on the adjudication record
   in fast / profile-aware mode:
   - `fix_criterion`: the criterion by which the fix should be judged.
   - `verification_target`: the artifact location the verifier should re-read.
   These fields are optional in legacy / thorough mode; their absence in fast
-  mode triggers fallback reason `F2-1` on the next route decision.
+  mode triggers fallback reason `F3-1` (via the 2b-side replay of F2-1) on
+  the next 3a route decision. The `--verbose` reader surfaces the inner
+  cause as `F3-1 via F2-1: ...` so operators can see which specific 2b
+  adjudication is incomplete.
 - For reject: justify in `rejection_reason`.
 - Add a `SelfReviewEntry`.
 
