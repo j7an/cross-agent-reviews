@@ -456,6 +456,36 @@ def test_status_renders_narrow_route_line_for_fast_mode_block(tmp_path):
     assert "(narrow: slices 1, 3, 5; mandatory: 5)" in result.stdout
 
 
+def test_status_narrow_route_line_includes_cross_artifact_mandatory_slice(tmp_path):
+    """When a cross-artifact slice (is_fixed=True) is in the plan it is
+    mandatory just like the global-coherence slice. Status must name BOTH
+    in the `mandatory:` annotation, otherwise an operator cannot tell that
+    the cross-artifact slice was included by necessity rather than by
+    impact selection."""
+    r1a = {
+        "stage": "1a",
+        "emitted_at": "2026-05-17T10:00:00Z",
+        "slice_plan": [
+            {"agent_id": 1, "is_fixed": False},
+            {"agent_id": 3, "is_fixed": False},
+            {"agent_id": 5, "is_fixed": False},
+            {"agent_id": 6, "is_fixed": True},
+        ],
+    }
+    ws = _seed_route_workspace(
+        tmp_path,
+        mode="fast",
+        review_profile="patch",
+        current_stage="round_2a_pending",
+        completed_rounds=["1a", "1b"],
+        round_1a=r1a,
+        round_1b=_narrow_round_1b(),
+    )
+    result = run(["--slug", "foo"], cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "(narrow: slices 1, 3, 5, 6; mandatory: 5, 6)" in result.stdout
+
+
 def test_status_renders_broad_route_line_with_fallback_reason(tmp_path):
     """fast/patch with fix_criterion missing on the only accepted finding ->
     F2-1 fallback. Compact one-clause expansion appears."""

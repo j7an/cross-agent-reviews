@@ -255,9 +255,15 @@ def _format_route_line(decision, r1a, r1b, r2a, r2b, stage: str) -> str:
     if decision.scope == "narrow":
         mandatory = identify_mandatory_slices(r1a["slice_plan"])
         m = mandatory["global_coherence_slice"]
+        c = mandatory["cross_artifact_slice"]
+        # cross_artifact_slice is mandatory whenever it exists, just like
+        # the global-coherence slice; both must appear in the annotation so
+        # an operator can tell impact-selected slices apart from required
+        # ones.
+        mandatory_ids = sorted([s for s in (m, c) if s is not None])
         return (
             f"  (narrow: slices {', '.join(str(s) for s in decision.selected_slices)}; "
-            f"mandatory: {m})"
+            f"mandatory: {', '.join(str(s) for s in mandatory_ids)})"
         )
     first = sorted(decision.fallback_reasons)[0]
     slice_plan = r1a["slice_plan"]
