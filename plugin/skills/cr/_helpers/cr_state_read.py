@@ -274,22 +274,80 @@ def _check_agents_match_slice_plan(envelope: dict) -> str | None:
     return None
 
 
-def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | None:
+def _check_agents_match_route(
+    envelope: dict,
+    block: dict | None,
+    prior_1a: dict | None,
+    prior_1b: dict | None,
+    prior_2a: dict | None,
+    prior_2b: dict | None,
+) -> str | None:
+    """Replay the writer's route-aware agent-vs-route check for 2a/3a paste.
+
+    `cr_state_write.py::_build_audit_envelope` computes `decide_2a` /
+    `decide_3a` from `block` + prior on-disk rounds and requires the
+    submitted `agents` to match exactly `decision.selected_slices`. The
+    paste path must replay the same decision so a narrow envelope produced
+    by the writer is accepted on the receiving host. Falls back to the
+    strict slice_plan match when any required input is missing (paste with
+    no local state block; should not occur via `_cmd_paste` which always
+    passes block). Returns an error message on mismatch or unrecoverable
+    inputs, else None."""
+    stage = envelope["stage"]
+    if block is None or prior_1a is None or prior_1b is None:
+        # No way to derive the route decision; fall back to the strict
+        # slice_plan match (preserves legacy behaviour for callers that
+        # don't have a state block).
+        return _check_agents_match_slice_plan(envelope)
+    try:
+        if stage == "2a":
+            decision = decide_2a(block, prior_1a, prior_1b)
+        else:  # 3a
+            if prior_2a is None or prior_2b is None:
+                return _check_agents_match_slice_plan(envelope)
+            decision = decide_3a(block, prior_1a, prior_1b, prior_2a, prior_2b)
+    except ValueError as e:
+        return f"route-decision replay failed on paste: {e}"
+    expected = sorted(decision.selected_slices)
+    actual = sorted(a["agent_id"] for a in envelope["agents"])
+    if actual != expected:
+        scope_label = decision.scope
+        reason_label = (
+            f" (fallback: {','.join(decision.fallback_reasons)})"
+            if decision.scope == "broad" and decision.fallback_reasons
+            else ""
+        )
+        return (
+            f"agent reports do not align with route decision ({scope_label}"
+            f"{reason_label}): expected agent_ids {expected}, got {actual}"
+        )
+    return None
+
+
+def _paste_cross_round_invariants(
+    envelope: dict, artifact_dir: Path, block: dict | None = None
+) -> str | None:
     """Apply the cross-round checks that `cr_state_write.py` runs locally.
 
-    For 1a/2a/3a: the `agents` agent_ids must match the `slice_plan`
-    agent_ids exactly. For 2a: verifications must reference accepted 1b
-    findings with the correct frozen-slice ownership. For 2a/3a: the
-    `slice_plan` must match the prior audit round's slice plan. For
-    1b/2b/3b: the same per-envelope settle invariants
-    `_build_settle_envelope` enforces locally — every paired-audit finding
-    has exactly one adjudication, every accepted finding has matching
-    changelog and self_review entries, and every adjudication / changelog /
-    self_review finding_id resolves into the paired audit (or, for 2b only,
-    the paired 2a's `round_1_verifications`). Returns an error message
-    string on failure, or None when the envelope passes."""
+    For 1a: the `agents` agent_ids must match the `slice_plan` agent_ids
+    exactly. For 2a/3a: the actual `agents` must match the route decision's
+    `selected_slices` — narrow under impact routing, broad (== full
+    slice_plan) under any fallback — replaying `decide_2a` / `decide_3a` over
+    the prior rounds on disk. Without route-awareness here every narrow audit
+    envelope produced by the writer would be rejected cross-host, breaking
+    the impact-routing feature for distributed review. For 2a:
+    verifications must reference accepted 1b findings with the correct
+    frozen-slice ownership. For 2a/3a: the `slice_plan` must match the
+    prior audit round's slice plan. For 1b/2b/3b: the same per-envelope
+    settle invariants `_build_settle_envelope` enforces locally — every
+    paired-audit finding has exactly one adjudication, every accepted
+    finding has matching changelog and self_review entries, and every
+    adjudication / changelog / self_review finding_id resolves into the
+    paired audit (or, for 2b only, the paired 2a's
+    `round_1_verifications`). Returns an error message string on failure,
+    or None when the envelope passes."""
     stage = envelope["stage"]
-    if stage in {"1a", "2a", "3a"}:
+    if stage == "1a":
         err = _check_agents_match_slice_plan(envelope)
         if err is not None:
             return err
@@ -305,10 +363,19 @@ def _paste_cross_round_invariants(envelope: dict, artifact_dir: Path) -> str | N
             err = _check_slice_plan_frozen(envelope, prior_1a)
             if err is not None:
                 return err
+            err = _check_agents_match_route(envelope, block, prior_1a, prior_1b, None, None)
+            if err is not None:
+                return err
     elif stage == "3a":
         prior_2a = _read_optional(artifact_dir / "round-2a.json")
         if prior_2a is not None:
             err = _check_slice_plan_frozen(envelope, prior_2a)
+            if err is not None:
+                return err
+            prior_1a = _read_optional(artifact_dir / "round-1a.json")
+            prior_1b = _read_optional(artifact_dir / "round-1b.json")
+            prior_2b = _read_optional(artifact_dir / "round-2b.json")
+            err = _check_agents_match_route(envelope, block, prior_1a, prior_1b, prior_2a, prior_2b)
             if err is not None:
                 return err
     elif stage in {"1b", "2b", "3b"}:
@@ -689,7 +756,7 @@ def _cmd_paste(repo_root: Path, slug: str, raw: str) -> int:
     # is rejected before it touches disk. Required prior round files must be
     # available locally (the pending-import branch above already confirmed
     # `completed_rounds` and the on-disk round files agree).
-    invariant_err = _paste_cross_round_invariants(instance, artifact_dir)
+    invariant_err = _paste_cross_round_invariants(instance, artifact_dir, block)
     if invariant_err is not None:
         return err(invariant_err)
     # Clean-3a parity for terminal backfill: when the pending import is the

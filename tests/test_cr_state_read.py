@@ -1014,7 +1014,11 @@ def test_paste_3a_rejects_partial_agents_against_slice_plan(workspace_with_1a, f
         SCRIPT, ["--paste", "--slug", "foo"], cwd=workspace_with_1a, stdin=json.dumps(envelope)
     )
     assert result.returncode == 1
-    assert "slice_plan" in result.stderr
+    # Paste replays the route decision (broad here, because the fixture has
+    # no fast/patch state block). Either the route-decision branch or the
+    # legacy slice-plan branch must reject the partial agent set; both name
+    # the missing agent_ids in the error.
+    assert ("route decision" in result.stderr) or ("slice_plan" in result.stderr)
     assert "agent_ids" in result.stderr
 
 

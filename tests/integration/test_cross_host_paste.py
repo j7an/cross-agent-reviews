@@ -880,6 +880,103 @@ def test_paste_import_preserves_finding_lineage_byte_for_byte(tmp_path):
     assert round_1b_bytes_b == round_1b_bytes_a
 
 
+def _write_2a_narrow_135(host):
+    """Write a narrow 2a covering {1,3,5} that verifies R1-1-001 as resolved.
+    fast/patch + accepted R1-1-001 with additional_affected_slices=[3] yields
+    a narrow route over slices {1, 3, 5} (origin 1 + impact 3 + global-coh 5).
+    """
+    concerns = {
+        1: ("Data model & schemas", "§3-§5"),
+        3: ("Acceptance criteria & testability", "§7-§8"),
+        5: ("Global coherence", "all"),
+    }
+    agents = []
+    for aid in (1, 3, 5):
+        concern, slice_def = concerns[aid]
+        verifications = (
+            [
+                {
+                    "round_1_finding_id": "R1-1-001",
+                    "status": "resolved",
+                    "evidence": "§3.2 now defines foo: string.",
+                }
+            ]
+            if aid == 1
+            else []
+        )
+        agents.append(
+            {
+                "agent_id": aid,
+                "concern": concern,
+                "slice_definition": slice_def,
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": verifications,
+            }
+        )
+    input_path = host / "round_2a_narrow_input.json"
+    input_path.write_text(json.dumps({"stage": "2a", "agents": agents}))
+    return run(
+        WRITE,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--input",
+            str(input_path),
+        ],
+        cwd=host,
+    )
+
+
+def test_narrow_2a_envelope_paste_imports_under_route_decision(tmp_path):
+    """T33: narrow 2a written on host A must paste-import on host B. The
+    writer accepts only `decision.selected_slices` for a narrow route, so
+    paste-import must replay the same route decision instead of comparing
+    against the full slice_plan. Without route-awareness, every narrow audit
+    envelope is rejected cross-host and the impact-routing feature is
+    effectively single-host."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: init + drive 1a → 1b → narrow 2a locally.
+    assert _init_fast_patch(host_a).returncode == 0
+    assert _write_1a_fast_patch(host_a).returncode == 0
+    assert _write_1b_fast_patch_accept(host_a).returncode == 0
+    r2a_a = _write_2a_narrow_135(host_a)
+    assert r2a_a.returncode == 0, r2a_a.stderr
+    round_2a_path_a = host_a / ".cross-agent-reviews/foo/spec/round-2a.json"
+    settled_2a = json.loads(round_2a_path_a.read_text())
+    actual_agents = sorted(a["agent_id"] for a in settled_2a["agents"])
+    assert actual_agents == [1, 3, 5], (
+        f"sanity: host A 2a must be narrow [1,3,5]; got {actual_agents}"
+    )
+
+    # Host B: init fast/patch, paste 1a + 1b so the route decision can be
+    # re-derived from on-disk prior rounds.
+    assert _init_fast_patch(host_b).returncode == 0
+    for stage in ("1a", "1b"):
+        env_bytes = (host_a / f".cross-agent-reviews/foo/spec/round-{stage}.json").read_bytes()
+        paste = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=env_bytes.decode())
+        assert paste.returncode == 0, f"paste {stage}: {paste.stderr}"
+
+    # Now paste host A's narrow 2a. This must succeed: the writer accepted
+    # it locally; cross-host paste must replay the same route decision.
+    paste_2a = run(
+        READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_2a_path_a.read_bytes().decode()
+    )
+    assert paste_2a.returncode == 0, paste_2a.stderr
+    round_2a_b = (host_b / ".cross-agent-reviews/foo/spec/round-2a.json").read_bytes()
+    assert round_2a_b == round_2a_path_a.read_bytes(), "narrow 2a must round-trip byte-identical"
+
+
 def test_route_decision_identical_across_hosts(tmp_path):
     """T32: same fast/patch state on both hosts; running
     `cr_state_read.py --route-decision --stage 2a` on each emits byte-identical
