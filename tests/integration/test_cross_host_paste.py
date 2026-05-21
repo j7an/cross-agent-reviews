@@ -1077,3 +1077,94 @@ def test_route_decision_identical_across_hosts(tmp_path):
     assert out_a.returncode == 0, out_a.stderr
     assert out_b.returncode == 0, out_b.stderr
     assert out_a.stdout == out_b.stdout
+
+
+def _init_legacy(host):
+    """Init host with no --mode and no --review-profile (legacy/thorough).
+    Local writer in this shape would NEVER emit finding_lineage."""
+    return run(
+        INIT,
+        [
+            "--artifact-path",
+            "docs/specs/foo-design.md",
+            "--artifact-type",
+            "spec",
+            "--no-gitignore-prompt",
+        ],
+        cwd=host,
+        stdin="",
+    )
+
+
+def test_dispatch_bundle_emits_per_slice_payload(tmp_path):
+    """`--dispatch-bundle` produces the narrow-routing payload described in
+    `_shared/dispatch-template.md` (§Lineage-bundle payload). For the origin
+    slice it lists the row under `verifications_for_this_slice`; for an
+    impacted slice it lists the same row under `impacts_for_this_slice`;
+    for the global-coherence slice it additionally emits `global_summary`."""
+    host = tmp_path / "A"
+    host.mkdir()
+    _make_workspace(host)
+    assert _init_fast_patch(host).returncode == 0
+    assert _write_1a_fast_patch(host).returncode == 0
+    assert _write_1b_fast_patch_accept(host).returncode == 0
+
+    base = ["--slug", "foo", "--artifact-type", "spec", "--dispatch-bundle", "--stage", "2a"]
+    out1 = run(READ, [*base, "--agent-id", "1"], cwd=host)
+    out3 = run(READ, [*base, "--agent-id", "3"], cwd=host)
+    out5 = run(READ, [*base, "--agent-id", "5"], cwd=host)
+    assert out1.returncode == 0, out1.stderr
+    assert out3.returncode == 0, out3.stderr
+    assert out5.returncode == 0, out5.stderr
+
+    bundle1 = json.loads(out1.stdout)
+    bundle3 = json.loads(out3.stdout)
+    bundle5 = json.loads(out5.stdout)
+
+    assert len(bundle1["verifications_for_this_slice"]) == 1
+    assert bundle1["verifications_for_this_slice"][0]["original_finding_id"] == "R1-1-001"
+    assert bundle1["impacts_for_this_slice"] == []
+    assert "global_summary" not in bundle1
+
+    assert bundle3["verifications_for_this_slice"] == []
+    assert len(bundle3["impacts_for_this_slice"]) == 1
+    assert bundle3["impacts_for_this_slice"][0]["original_finding_id"] == "R1-1-001"
+    assert "global_summary" not in bundle3
+
+    assert "global_summary" in bundle5
+    assert bundle5["global_summary"]["accepted_findings_count"] == 1
+    assert bundle5["global_summary"]["all_affected_slices"] == [1, 3]
+
+
+def test_paste_rejects_fast_lineage_into_legacy_state(tmp_path):
+    """A 1b envelope produced under fast/patch carries `finding_lineage`. If
+    the receiving host is legacy/thorough (mode and review_profile unset),
+    the local writer would NEVER emit that field. Accepting the paste
+    persists a shape the local writer cannot produce, breaking cross-host
+    parity and weakening legacy/thorough guarantees. The settle paste must
+    be rejected."""
+    host_a = tmp_path / "A"
+    host_b = tmp_path / "B"
+    host_a.mkdir()
+    host_b.mkdir()
+    _make_workspace(host_a)
+    _make_workspace(host_b)
+
+    # Host A: fast/patch with lineage.
+    assert _init_fast_patch(host_a).returncode == 0
+    assert _write_1a_fast_patch(host_a).returncode == 0
+    assert _write_1b_fast_patch_accept(host_a).returncode == 0
+    settled_1b = json.loads((host_a / ".cross-agent-reviews/foo/spec/round-1b.json").read_bytes())
+    # Sanity: fast/patch writer emits finding_lineage.
+    assert "finding_lineage" in settled_1b
+
+    # Host B: legacy/thorough (no mode, no review_profile).
+    assert _init_legacy(host_b).returncode == 0
+
+    round_1a_bytes = (host_a / ".cross-agent-reviews/foo/spec/round-1a.json").read_bytes()
+    paste_1a = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=round_1a_bytes.decode())
+    assert paste_1a.returncode == 0, paste_1a.stderr
+
+    paste_1b = run(READ, ["--paste", "--slug", "foo"], cwd=host_b, stdin=json.dumps(settled_1b))
+    assert paste_1b.returncode != 0
+    assert "lineage" in paste_1b.stderr.lower()

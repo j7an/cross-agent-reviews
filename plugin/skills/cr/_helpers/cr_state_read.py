@@ -35,7 +35,7 @@ from _cr_lib import (
 # findings, or any 2a/3a payload whose `slice_plan` diverges from the prior
 # audit round). Replaying these on import keeps cross-host state in lockstep
 # with what local writes would have produced.
-from cr_routing import decide_2a, decide_3a
+from cr_routing import decide_2a, decide_3a, identify_mandatory_slices
 from cr_state_write import (
     SETTLE_STAGES,
     _build_lineage_2b,
@@ -637,13 +637,31 @@ def _check_settle_lineage_parity(
     markers on stderr by design; suppress them here — the original write
     already surfaced them, and replay shouldn't double-emit.
     """
-    if block is None:
-        return None
-    if block.get("mode") != "fast" or block.get("review_profile") is None:
-        return None
     if envelope["stage"] not in {"1b", "2b"}:
         return None
-    if "finding_lineage" not in envelope:
+    local_emits_lineage = (
+        block is not None
+        and block.get("mode") == "fast"
+        and block.get("review_profile") is not None
+    )
+    has_lineage = "finding_lineage" in envelope
+    if not local_emits_lineage:
+        # Local writer would never emit finding_lineage in legacy / thorough
+        # mode or in a fast block with no review_profile. Accepting a pasted
+        # envelope with the field would persist a shape no local write could
+        # produce, breaking cross-host parity and weakening legacy/thorough
+        # behaviour guarantees (the field becomes load-bearing for routing
+        # checks that legacy/thorough state is not supposed to carry).
+        if has_lineage:
+            return (
+                "finding_lineage present on settle paste but local block is "
+                "not fast / profile-aware (writer would omit the field; "
+                "accepting would persist a shape local writes cannot produce)"
+            )
+        return None
+    if block is None:
+        return None  # narrows type for the rest of the function
+    if not has_lineage:
         return (
             "finding_lineage absent under fast / profile-aware mode "
             "(writer would emit the field, even if empty)"
@@ -1143,6 +1161,82 @@ def _cmd_route_decision(
     return 0
 
 
+def _cmd_dispatch_bundle(
+    repo_root: Path, slug: str, artifact_type: str, stage: str, agent_id: int
+) -> int:
+    """Emit the per-slice lineage bundle for narrow-routing dispatch.
+
+    Mirrors the §Lineage-bundle payload shape in
+    `_shared/dispatch-template.md`. The lineage source is the preceding
+    settle round: 1b for stage 2a, 2b for stage 3a. The caller invokes this
+    once per `selected_slice` from `--route-decision` and passes the
+    resulting JSON as the sub-agent's `${PRIOR_ROUND_PAYLOAD_JSON}`.
+
+    Construction belongs in the script because the transformation is
+    deterministic (set-membership filters + a small aggregate) and the LLM
+    would otherwise have to assemble it by hand from the on-disk round
+    files, where any drift between operator and writer breaks the
+    F3-5 / dispatch-payload contract.
+    """
+    state_path = state_dir(repo_root) / slug / "state.json"
+    if not state_path.exists():
+        return err(f"no state for slug {slug!r}")
+    artifact_dir = state_dir(repo_root) / slug / artifact_type
+    r1a = _read_optional(artifact_dir / "round-1a.json")
+    if r1a is None:
+        return err("dispatch-bundle requires round-1a.json on disk")
+    if stage == "2a":
+        settle = _read_optional(artifact_dir / "round-1b.json")
+        if settle is None:
+            return err("dispatch-bundle --stage 2a requires round-1b.json on disk")
+    else:
+        settle = _read_optional(artifact_dir / "round-2b.json")
+        if settle is None:
+            return err("dispatch-bundle --stage 3a requires round-2b.json on disk")
+
+    slice_plan = r1a["slice_plan"]
+    valid_agent_ids = {s["agent_id"] for s in slice_plan}
+    if agent_id not in valid_agent_ids:
+        return err(f"--agent-id {agent_id} is not in the round-1a slice_plan")
+
+    lineage = settle.get("finding_lineage", [])
+    verifications = [row for row in lineage if row.get("originating_agent_id") == agent_id]
+    impacts = [
+        row
+        for row in lineage
+        if agent_id in row.get("affected_slices", [])
+        and row.get("originating_agent_id") != agent_id
+    ]
+
+    try:
+        mandatory = identify_mandatory_slices(slice_plan)
+    except ValueError as e:
+        return err(str(e))
+    include_summary = (
+        agent_id
+        in {
+            mandatory["global_coherence_slice"],
+            mandatory["cross_artifact_slice"],
+        }
+        and agent_id is not None
+    )
+    bundle: dict = {
+        "verifications_for_this_slice": verifications,
+        "impacts_for_this_slice": impacts,
+    }
+    if include_summary:
+        all_affected: set[int] = set()
+        for row in lineage:
+            all_affected.update(row.get("affected_slices", []))
+        bundle["global_summary"] = {
+            "accepted_findings_count": len(settle.get("accepted_findings", [])),
+            "all_affected_slices": sorted(all_affected),
+            "edit_locations_compact": [row.get("affected_location", "") for row in lineage],
+        }
+    sys.stdout.write(canonical_json(bundle))
+    return 0
+
+
 def _cmd_assert(
     repo_root: Path,
     slug: str,
@@ -1193,6 +1287,8 @@ def main() -> int:
     p.add_argument("--assert-mode", choices=["thorough", "fast"])
     p.add_argument("--assert-profile", choices=["patch", "feature", "greenfield"])
     p.add_argument("--route-decision", action="store_true")
+    p.add_argument("--dispatch-bundle", action="store_true")
+    p.add_argument("--agent-id", type=int)
     p.add_argument("--stage", choices=["2a", "3a"])
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
@@ -1214,6 +1310,12 @@ def main() -> int:
             return err("--route-decision requires --artifact-type and --stage")
         return _cmd_route_decision(
             repo_root, args.slug, args.artifact_type, args.stage, args.verbose
+        )
+    if args.dispatch_bundle:
+        if args.artifact_type is None or args.stage is None or args.agent_id is None:
+            return err("--dispatch-bundle requires --artifact-type, --stage, and --agent-id")
+        return _cmd_dispatch_bundle(
+            repo_root, args.slug, args.artifact_type, args.stage, args.agent_id
         )
     if args.assert_mode is not None or args.assert_profile is not None:
         if args.artifact_type is None:
