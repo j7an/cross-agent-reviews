@@ -34,10 +34,23 @@ ${ROUND_MISSION_TEXT}
 
 The artifact to review is at: ${ARTIFACT_PATH} (${ARTIFACT_TYPE}).
 
-For Round 2a only: verify each accepted Round 1 finding listed below was
-resolved by the author's edits, and emit one verification per finding.
-When the payload is an object rather than an array, consult
-§Lineage-bundle payload below for its shape.
+Prior-round payload (interpret per stage and shape):
+
+- Round 2a, broad routing — the payload is an ARRAY of accepted Round 1
+  findings. Verify each one was resolved by the author's edits and emit
+  one verification per finding.
+- Round 2a, narrow routing — the payload is an OBJECT (the lineage
+  bundle described in §Lineage-bundle payload below). Verify the rows
+  in `verifications_for_this_slice` and scan the regions named in
+  `impacts_for_this_slice` for new findings the other slice's edits may
+  have introduced.
+- Round 3a, broad routing — the payload is an empty array `[]`. Do not
+  re-verify prior findings; perform a strict-blocker scan over your
+  whole slice.
+- Round 3a, narrow routing — the payload is the same lineage-bundle
+  OBJECT. Re-scan the regions described by
+  `verifications_for_this_slice` and `impacts_for_this_slice` for true
+  blockers only; do not re-verify Round 1/2 findings.
 ${PRIOR_ROUND_PAYLOAD_JSON}
 
 Return a status report following the protocol in
