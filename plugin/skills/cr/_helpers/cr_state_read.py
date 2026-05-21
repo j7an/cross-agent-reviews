@@ -1228,8 +1228,16 @@ def _cmd_dispatch_bundle(
         all_affected: set[int] = set()
         for row in lineage:
             all_affected.update(row.get("affected_slices", []))
+        # accepted_findings_count tracks the number of lineage rows surfaced
+        # in this bundle (one row per accepted finding whose edits are
+        # represented), not just len(settle.accepted_findings). In a 3a
+        # bundle this matters: the lineage contains 1b carry-forward rows
+        # plus fresh 2a rows, while settle.accepted_findings is only the
+        # 2b-accepted set. Aligning the count with edit_locations_compact
+        # 1:1 keeps the summary internally consistent for the
+        # global/coherence sub-agent.
         bundle["global_summary"] = {
-            "accepted_findings_count": len(settle.get("accepted_findings", [])),
+            "accepted_findings_count": len(lineage),
             "all_affected_slices": sorted(all_affected),
             "edit_locations_compact": [row.get("affected_location", "") for row in lineage],
         }

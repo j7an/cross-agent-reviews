@@ -1132,8 +1132,169 @@ def test_dispatch_bundle_emits_per_slice_payload(tmp_path):
     assert "global_summary" not in bundle3
 
     assert "global_summary" in bundle5
+    # accepted_findings_count must match edit_locations_compact 1:1 (one entry
+    # per lineage row in the bundle). 2a stage: lineage has one row, accepted
+    # has one finding, so count == 1.
     assert bundle5["global_summary"]["accepted_findings_count"] == 1
+    assert len(bundle5["global_summary"]["edit_locations_compact"]) == 1
     assert bundle5["global_summary"]["all_affected_slices"] == [1, 3]
+
+
+def test_dispatch_bundle_stage_3a_summary_count_matches_edit_locations(tmp_path):
+    """3a bundle's global_summary.accepted_findings_count must align with
+    edit_locations_compact 1:1 — both should reflect the full lineage
+    (carry-forward 1b rows PLUS fresh 2a rows), not just settle.accepted.
+    Synthesise a 2b file with one carry-forward + one fresh row and confirm
+    the helper reports count == 2 (= len(edit_locations_compact))."""
+    host = tmp_path / "A"
+    host.mkdir()
+    _make_workspace(host)
+    assert _init_fast_patch(host).returncode == 0
+    assert _write_1a_fast_patch(host).returncode == 0
+    assert _write_1b_fast_patch_accept(host).returncode == 0
+
+    # Direct-write a synthetic round-2a.json + round-2b.json on disk. The
+    # dispatch-bundle helper only reads round-1a.json and the settle file
+    # (round-2b for stage 3a), so we bypass the writer here to construct
+    # a minimal mixed-lineage scenario without driving 2a end-to-end.
+    artifact_dir = host / ".cross-agent-reviews/foo/spec"
+    settled_1b = json.loads((artifact_dir / "round-1b.json").read_bytes())
+    round_2a = {
+        "round": 2,
+        "stage": "2a",
+        "schema_version": 1,
+        "slug": "foo",
+        "artifact_type": "spec",
+        "artifact_path": "docs/specs/foo-design.md",
+        "emitted_at": "2026-05-20T00:00:00Z",
+        "slice_plan": settled_1b["slice_plan"],
+        "agents": [
+            {
+                "agent_id": 1,
+                "concern": "Data model & schemas",
+                "slice_definition": "§3-§5",
+                "status": "issues_found",
+                "findings": [
+                    {
+                        "location": "§3.3 line 60",
+                        "severity": "gap",
+                        "finding": "Missing schema for bar.",
+                        "why_it_matters": "Implementer cannot type bar.",
+                        "suggested_direction": "Define bar in §3.3.",
+                    }
+                ],
+                "round_1_verifications": [
+                    {"round_1_finding_id": "R1-1-001", "status": "resolved", "evidence": "ok"}
+                ],
+            },
+            *[
+                {
+                    "agent_id": i,
+                    "concern": settled_1b["slice_plan"][i - 1]["concern"],
+                    "slice_definition": settled_1b["slice_plan"][i - 1]["slice_definition"],
+                    "status": "verified",
+                    "findings": [],
+                    "round_1_verifications": [],
+                }
+                for i in (2, 3, 4, 5)
+            ],
+        ],
+    }
+    (artifact_dir / "round-2a.json").write_text(json.dumps(round_2a))
+
+    carry_forward = {
+        **settled_1b["finding_lineage"][0],
+        "lineage_id": "L-2b-R1-1-001",
+        "prior_lineage_id": "L-1b-R1-1-001",
+        "latest_verification": {"status": "resolved", "evidence": "ok"},
+    }
+    fresh_2a = {
+        "lineage_id": "L-2b-R2-1-001",
+        "original_finding_id": "R2-1-001",
+        "originating_stage": "2a",
+        "originating_agent_id": 1,
+        "originating_slice": "Data model & schemas",
+        "affected_location": "§3.3 line 60",
+        "affected_slices": [1],
+        "fix_criterion": "Define bar with a concrete type.",
+        "verification_target": "§3.3 declares bar.",
+        "prior_lineage_id": None,
+        "latest_verification": None,
+    }
+    round_2b = {
+        "round": 2,
+        "stage": "2b",
+        "schema_version": 1,
+        "slug": "foo",
+        "artifact_type": "spec",
+        "artifact_path": "docs/specs/foo-design.md",
+        "emitted_at": "2026-05-20T00:00:01Z",
+        "slice_plan": settled_1b["slice_plan"],
+        "adjudications": [
+            {
+                "finding_id": "R2-1-001",
+                "verdict": "accept",
+                "reasoning": "fix",
+                "fix_criterion": "Define bar with a concrete type.",
+                "verification_target": "§3.3 declares bar.",
+            }
+        ],
+        "accepted_findings": [
+            {
+                "id": "R2-1-001",
+                "location": "§3.3 line 60",
+                "severity": "gap",
+                "finding": "Missing schema for bar.",
+                "why_it_matters": "Implementer cannot type bar.",
+                "suggested_direction": "Define bar in §3.3.",
+            }
+        ],
+        "rejected_findings": [],
+        "changelog": [
+            {
+                "finding_id": "R2-1-001",
+                "change_made": "Defined bar in §3.3.",
+                "additional_affected_slices": [],
+            }
+        ],
+        "self_review": [
+            {
+                "finding_id": "R2-1-001",
+                "resolved": True,
+                "over_specified": False,
+                "introduces_contradiction": False,
+                "notes": "ok",
+            }
+        ],
+        "adjudication_summary": {"accepted": 1, "rejected": 0},
+        "finding_lineage": [carry_forward, fresh_2a],
+    }
+    (artifact_dir / "round-2b.json").write_text(json.dumps(round_2b))
+
+    out5 = run(
+        READ,
+        [
+            "--slug",
+            "foo",
+            "--artifact-type",
+            "spec",
+            "--dispatch-bundle",
+            "--stage",
+            "3a",
+            "--agent-id",
+            "5",
+        ],
+        cwd=host,
+    )
+    assert out5.returncode == 0, out5.stderr
+    bundle5 = json.loads(out5.stdout)
+    summary = bundle5["global_summary"]
+    # Lineage has 2 rows (one 1b carry-forward + one fresh 2a). The summary
+    # must reflect the bundle's full edit footprint, not settle.accepted's
+    # 2b-only count of 1.
+    assert summary["accepted_findings_count"] == 2
+    assert len(summary["edit_locations_compact"]) == 2
+    assert summary["accepted_findings_count"] == len(summary["edit_locations_compact"])
 
 
 def test_paste_rejects_fast_lineage_into_legacy_state(tmp_path):

@@ -103,4 +103,8 @@ is an object of this shape:
 - `global_summary` — present only when `${SLICE_AGENT_ID}` is the
   global-coherence slice or the cross-artifact slice. One-line edit summary
   per accepted finding; keeps the payload bounded by edit count, not
-  artifact size.
+  artifact size. `accepted_findings_count` equals the number of lineage rows
+  in this bundle (one per accepted finding whose edits are represented), so
+  it matches `edit_locations_compact` 1:1 — for a 3a bundle this includes
+  both the 1b carry-forward rows and the fresh 2a rows, not just the
+  2b-accepted subset.
