@@ -32,6 +32,48 @@
     "completed_round": {"type": "string", "enum": ["1a", "1b", "2a", "2b", "3a", "3b", "3c"]},
     "iso8601_utc": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
     "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "resolution_reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "selected_profile"],
+      "properties": {
+        "rule_id": {"type": "string"},
+        "competing_rules": {"type": "array", "items": {"type": "string"}},
+        "selected_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]}
+      }
+    },
+    "fired_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "kind"],
+      "properties": {
+        "rule_id": {"type": "string"},
+        "kind": {"type": "string", "enum": ["profile", "mode"]},
+        "votes_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "matched_signals": {"type": "object"}
+      }
+    },
+    "suggestion_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleset_version", "artifact_type", "artifact_content_hash", "resolution",
+        "suggested_review_profile", "suggested_mode", "fast_eligible",
+        "fired_rules", "resolution_reason", "signals"
+      ],
+      "properties": {
+        "ruleset_version": {"type": "integer", "minimum": 1},
+        "artifact_type": {"type": "string", "enum": ["spec", "plan"]},
+        "artifact_content_hash": {"$ref": "#/$defs/content_hash"},
+        "resolution": {"type": "string", "enum": ["single", "agreement", "conflict", "insufficient_evidence"]},
+        "suggested_review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "suggested_mode": {"type": "string", "enum": ["thorough", "fast"]},
+        "fast_eligible": {"type": "boolean"},
+        "fired_rules": {"type": "array", "items": {"$ref": "#/$defs/fired_rule"}},
+        "resolution_reason": {"$ref": "#/$defs/resolution_reason"},
+        "signals": {"type": "object"}
+      }
+    },
     "artifact_block": {
       "type": "object",
       "additionalProperties": false,
@@ -48,7 +90,10 @@
         "started_at": {"$ref": "#/$defs/iso8601_utc"},
         "last_updated_at": {"$ref": "#/$defs/iso8601_utc"},
         "mode": {"type": "string", "enum": ["thorough", "fast"]},
-        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]}
+        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "suggested_review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "suggested_mode": {"type": "string", "enum": ["thorough", "fast"]},
+        "suggestion_evidence": {"$ref": "#/$defs/suggestion_evidence"}
       }
     },
     "plan_artifact_block": {
@@ -68,7 +113,10 @@
         "started_at": {"$ref": "#/$defs/iso8601_utc"},
         "last_updated_at": {"$ref": "#/$defs/iso8601_utc"},
         "mode": {"type": "string", "enum": ["thorough", "fast"]},
-        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]}
+        "review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "suggested_review_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
+        "suggested_mode": {"type": "string", "enum": ["thorough", "fast"]},
+        "suggestion_evidence": {"$ref": "#/$defs/suggestion_evidence"}
       }
     }
   }
