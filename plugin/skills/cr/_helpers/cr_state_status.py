@@ -45,6 +45,10 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
         fe = "yes" if ev["fast_eligible"] else "no"
         rid = ev["resolution_reason"]["rule_id"]
         lines.append(f"    Suggested: profile={sp} mode={sm} (fast_eligible={fe})  [{rid}]")
+        # Divergence is checked on profile only, not mode: review_profile is the
+        # value that gates routing scope, so a suggested!=locked profile is the
+        # operationally meaningful mismatch to surface. A mode-only difference is
+        # left unflagged deliberately to keep the line uncluttered.
         locked = block.get("review_profile")
         if locked != sp:
             locked_label = locked if locked is not None else "unset"
