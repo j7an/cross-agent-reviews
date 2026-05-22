@@ -18,13 +18,14 @@ from pathlib import Path
 from _cr_lib import (
     atomic_write,
     canonical_json,
-    compute_content_hash,
+    compute_content_hash_bytes,
     derive_slug,
     err,
     find_repo_root,
     now_iso8601_utc,
     state_dir,
 )
+from cr_profile_suggest import suggest_for_artifact_bytes
 
 
 def _confirm(prompt: str) -> bool:
@@ -83,15 +84,21 @@ def _new_artifact_block(
     spec_hash: str | None,
     mode: str | None = None,
     review_profile: str | None = None,
+    suggestion: dict | None = None,
 ) -> dict:
     """Build a fresh state block.
 
     `stored_path` is the (typically repo-relative) path persisted to state;
     `content_hash` is computed by the caller against the resolved absolute
     artifact path so initialization works from any working directory inside
-    the repo. Mixing them up would make `compute_content_hash` interpret a
+    the repo. Mixing them up would make the content hashing interpret a
     repo-relative path against `Path.cwd()` and fail (or hash a different
     file) when the operator runs `cr_state_init` from a subdirectory.
+
+    `suggestion`, when provided, is the deterministic advisory profile/mode
+    suggestion (see cr_profile_suggest). It is recorded for audit only and
+    never sets the locked `mode`/`review_profile`, which come solely from
+    explicit operator tokens.
     """
     now = now_iso8601_utc()
     block: dict = {
@@ -108,6 +115,10 @@ def _new_artifact_block(
         block["mode"] = mode
     if review_profile is not None:
         block["review_profile"] = review_profile
+    if suggestion is not None:
+        block["suggested_review_profile"] = suggestion["suggested_review_profile"]
+        block["suggested_mode"] = suggestion["suggested_mode"]
+        block["suggestion_evidence"] = suggestion
     return block
 
 
@@ -138,8 +149,12 @@ def main() -> int:
     # Hash against the resolved absolute path so the read works regardless
     # of which directory the operator invoked the script from. The relative
     # path is what we persist (so state.json is portable across hosts), but
-    # the bytes-on-disk are what we hash.
-    content_hash = compute_content_hash(artifact)
+    # the bytes-on-disk are what we hash. Read the bytes once and reuse them
+    # for the suggestion so the recorded evidence hash is, by construction,
+    # the same hash stored on the block.
+    artifact_bytes = artifact.read_bytes()
+    content_hash = compute_content_hash_bytes(artifact_bytes)
+    suggestion = suggest_for_artifact_bytes(artifact_bytes, args.artifact_type)
 
     state_root = state_dir(repo_root)
     slug_dir = state_root / slug
@@ -183,6 +198,7 @@ def main() -> int:
                 spec_hash=spec_hash,
                 mode=args.mode,
                 review_profile=args.review_profile,
+                suggestion=suggestion,
             )
         else:
             # Adding a spec block to a slug that already has a plan block would
@@ -205,6 +221,7 @@ def main() -> int:
                 spec_hash=None,
                 mode=args.mode,
                 review_profile=args.review_profile,
+                suggestion=suggestion,
             )
     else:
         if existing.get("current_stage") == "ready_for_implementation":
@@ -230,6 +247,7 @@ def main() -> int:
                 spec_hash=spec_hash,
                 mode=args.mode,
                 review_profile=args.review_profile,
+                suggestion=suggestion,
             )
         else:
             return err(f"state block for `{block_key}` is in-flight ({existing['current_stage']}).")
