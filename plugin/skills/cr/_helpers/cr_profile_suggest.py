@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Deterministic, explainable profile/mode suggestion for /cr init (issue #35).
+
+Pure functions derive a suggestion from artifact TEXT only — no filesystem,
+no git, no Path.exists. The suggestion is advisory data recorded in state and
+printed by the read-only `/cr suggest` preview; it NEVER participates in
+routing. See docs/superpowers/specs/2026-05-21-issue-35-profile-suggestion-design.md.
+"""
+
+from __future__ import annotations
+
+import re
+
+RULESET_VERSION = 1
+
+# Safety order: index = review breadth. Conflict/insufficient escalate right.
+SAFETY_ORDER = ("patch", "feature", "greenfield")
+
+# --- Extraction thresholds (named constants; surfaced in `signals`) ---
+DENSITY_HIGH_ABS = 5  # line-anchored refs at/above this -> high
+DENSITY_HIGH_RATIO = 0.5  # ... or this anchored/total ratio with >=3 refs
+FANOUT_DIRS = 4  # distinct directories -> broad fan-out
+SMALL_FILES = 3  # at/below this referenced-path count is "small"
+CHECKLIST_MIN = 3  # checklist items needed to call a plan checklist-y
+PATHS_LIST_CAP = 200  # bound the persisted path list
+
+# A path-like token: >=1 slash and a dotted filename, optional :line anchor.
+_PATH_RE = re.compile(r"\b([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+)(?::(\d+))?")
+_CREATION_RE = re.compile(
+    r"\b(create (?:a )?new|new module|new package|new director(?:y|ies)|"
+    r"new subsystem|from scratch|greenfield|scaffold)\b",
+    re.IGNORECASE,
+)
+_CHECKLIST_RE = re.compile(r"^\s*[-*] \[[ xX]\]")
+_ARCH_HEADING_RE = re.compile(
+    r"^#{1,4}\s+(architecture|components?|data flow|system design|overview)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _categorize(path: str) -> str:
+    name = path.rsplit("/", 1)[-1]
+    if (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or "/tests/" in path
+        or path.startswith("tests/")
+    ):
+        return "tests"
+    if path.startswith("docs/") or "/docs/" in path or name.endswith(".md"):
+        return "docs"
+    if "/_shared/" in path:
+        return "shared_templates"
+    if "schema" in path and name.endswith(".json"):
+        return "schemas"
+    if name.startswith("round-"):
+        return "round_docs"
+    if "/_helpers/" in path:
+        return "helpers"
+    return "other"
+
+
+def _density_bucket(anchored: int, total: int) -> str:
+    if total == 0 or anchored == 0:
+        return "low"
+    ratio = anchored / total
+    if anchored >= DENSITY_HIGH_ABS or (total >= 3 and ratio >= DENSITY_HIGH_RATIO):
+        return "high"
+    return "med"
+
+
+def extract_signals(artifact_text: str, artifact_type: str) -> dict:
+    """Derive the bounded, deterministic signal vector from artifact text."""
+    paths: list[str] = []
+    anchored = 0
+    seen: set[str] = set()
+    for m in _PATH_RE.finditer(artifact_text):
+        path = m.group(1)
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+        if m.group(2) is not None:
+            anchored += 1
+    paths_sorted = sorted(seen)
+    dirs = sorted({p.rsplit("/", 1)[0] for p in paths_sorted if "/" in p})
+
+    categories: dict[str, int] = {}
+    for p in paths_sorted:
+        cat = _categorize(p)
+        categories[cat] = categories.get(cat, 0) + 1
+
+    total = len(paths_sorted)
+    docs_only = total > 0 and categories.get("docs", 0) == total
+    tests_only = total > 0 and categories.get("tests", 0) == total
+
+    creation = len(_CREATION_RE.findall(artifact_text))
+
+    cross_artifact = sum(1 for p in paths_sorted if re.search(r"docs/(specs|plans)/", p))
+
+    checklist_items = sum(1 for line in artifact_text.splitlines() if _CHECKLIST_RE.match(line))
+    prose_lines = sum(
+        1
+        for line in artifact_text.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not _CHECKLIST_RE.match(line)
+        and not line.lstrip().startswith("```")
+    )
+    checklist_only = checklist_items >= CHECKLIST_MIN and prose_lines <= checklist_items
+
+    signals = {
+        "artifact_type": artifact_type,
+        "referenced_file_paths_count": total,
+        "referenced_file_paths": paths_sorted[:PATHS_LIST_CAP],
+        "referenced_directories_count": len(dirs),
+        "referenced_directories": dirs[:PATHS_LIST_CAP],
+        "line_anchored_refs": anchored,
+        "existing_ref_density": _density_bucket(anchored, total),
+        "creation_markers": creation,
+        "file_category_counts": categories,
+        "docs_only": docs_only,
+        "tests_only": tests_only,
+        "cross_artifact_dependency_count": cross_artifact,
+        "checklist_item_count": checklist_items,
+        "checklist_only": checklist_only,
+        "architecture_section_present": bool(_ARCH_HEADING_RE.search(artifact_text)),
+    }
+    return signals
