@@ -425,6 +425,110 @@ def test_state_accepts_mode_and_review_profile_on_plan(schema_dir, registry):
     _validate(schema_dir, registry, "state.schema.json", state)
 
 
+# --- state.schema.json: suggestion fields (issue #35) ---
+
+
+def _suggestion_evidence():
+    return {
+        "ruleset_version": 1,
+        "artifact_type": "spec",
+        "artifact_content_hash": "sha256:" + "a" * 64,
+        "resolution": "insufficient_evidence",
+        "suggested_review_profile": "greenfield",
+        "suggested_mode": "thorough",
+        "fast_eligible": False,
+        "fired_rules": [],
+        "resolution_reason": {
+            "rule_id": "R-INSUFFICIENT-EVIDENCE",
+            "selected_profile": "greenfield",
+        },
+        "signals": {"referenced_file_paths_count": 0},
+    }
+
+
+def test_state_accepts_suggestion_fields(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["suggested_review_profile"] = "greenfield"
+    state["spec"]["suggested_mode"] = "thorough"
+    state["spec"]["suggestion_evidence"] = _suggestion_evidence()
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_legacy_block_without_suggestion_still_valid(schema_dir, registry):
+    # A block carrying no suggestion fields (pre-issue-35 state) stays valid.
+    _validate(schema_dir, registry, "state.schema.json", _base_state())
+
+
+def test_state_rejects_bad_suggested_profile(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["suggested_review_profile"] = "huge"
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_suggestion_evidence_missing_required(schema_dir, registry):
+    ev = _suggestion_evidence()
+    del ev["resolution_reason"]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_fired_rule_missing_matched_signals(schema_dir, registry):
+    # fired_rule.matched_signals is required: malformed audit evidence is rejected.
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [
+        {"rule_id": "R-NEW-SUBSYSTEM", "kind": "profile", "votes_profile": "greenfield"}
+    ]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_profile_fired_rule_missing_votes_profile(schema_dir, registry):
+    # A profile-kind rule must carry votes_profile (conditional requirement).
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [{"rule_id": "R-DOCS-ONLY", "kind": "profile", "matched_signals": {}}]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_accepts_mode_fired_rule_without_votes_profile(schema_dir, registry):
+    # A mode-kind rule legitimately omits votes_profile.
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [
+        {
+            "rule_id": "R-FAST-ELIGIBLE-PATCH",
+            "kind": "mode",
+            "matched_signals": {"resolved_profile": "patch"},
+        }
+    ]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_accepts_suggestion_fields_on_plan(schema_dir, registry):
+    state = _base_state()
+    state["spec"]["current_stage"] = "ready_for_implementation"
+    state["spec"]["completed_rounds"] = ["1a", "1b", "2a", "2b", "3a", "3b"]
+    plan_ev = _suggestion_evidence()
+    plan_ev["artifact_type"] = "plan"
+    state["plan"] = {
+        "path": "docs/plans/foo-plan.md",
+        "content_hash": "sha256:" + "b" * 64,
+        "spec_hash_at_start": "sha256:" + "0" * 64,
+        "current_stage": "round_1a_pending",
+        "completed_rounds": [],
+        "started_at": "2026-05-17T10:00:00Z",
+        "last_updated_at": "2026-05-17T10:00:00Z",
+        "suggested_review_profile": "greenfield",
+        "suggested_mode": "thorough",
+        "suggestion_evidence": plan_ev,
+    }
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
 # --- round-settle.schema.json: auto_settled field ---
 
 

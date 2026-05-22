@@ -409,3 +409,125 @@ def test_init_without_mode_omits_fields(workspace):
     state = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())
     assert "mode" not in state["spec"]
     assert "review_profile" not in state["spec"]
+
+
+# --- profile/mode suggestion recorded at init (issue #35) ---
+
+
+def test_init_records_suggestion_with_matching_hash(workspace):
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    result = run(
+        ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    assert "suggestion_evidence" in block
+    ev = block["suggestion_evidence"]
+    # evidence hash equals the block's content hash (shared-helper guarantee).
+    assert ev["artifact_content_hash"] == block["content_hash"]
+    # block-level mirrors evidence-level.
+    assert block["suggested_review_profile"] == ev["suggested_review_profile"]
+    assert block["suggested_mode"] == ev["suggested_mode"]
+
+
+def test_init_suggestion_does_not_set_locked_values(workspace):
+    # No operator tokens -> locked mode/review_profile stay absent even though
+    # a suggestion is recorded.
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    result = run(
+        ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    assert "review_profile" not in block
+    assert "mode" not in block
+    assert "suggested_review_profile" in block
+
+
+def test_init_records_suggestion_even_with_operator_tokens(workspace):
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    result = run(
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--review-profile",
+            "patch",
+            "--mode",
+            "fast",
+            "--no-gitignore-prompt",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    assert block["review_profile"] == "patch"  # operator authority preserved
+    assert block["mode"] == "fast"
+    assert "suggestion_evidence" in block  # still recorded for audit
+
+
+def test_init_recomputes_after_artifact_edited_between_preview_and_init(workspace):
+    # Stale-preview guard: preview reflects bytes-at-preview; init must reflect
+    # bytes-at-init, never a cached preview result.
+    from cr_profile_suggest import suggest_for_artifact_bytes
+
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+
+    # 1. Preview-time bytes: greenfield-leaning artifact.
+    preview_bytes = b"Create a new module `x/y`.\n"
+    artifact.write_bytes(preview_bytes)
+    preview_ev = suggest_for_artifact_bytes(preview_bytes, "spec")
+    assert preview_ev["suggested_review_profile"] == "greenfield"
+
+    # 2. Operator edits the artifact to a docs-only (patch-leaning) change.
+    new_bytes = b"Edit `docs/a.md` and `docs/b.md`.\n"
+    artifact.write_bytes(new_bytes)
+
+    # 3. Init recomputes from current bytes.
+    result = run(
+        ["--artifact-path", str(artifact), "--artifact-type", "spec", "--no-gitignore-prompt"],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    ev = block["suggestion_evidence"]
+    expected_hash = "sha256:" + hashlib.sha256(new_bytes).hexdigest()
+    assert ev["artifact_content_hash"] == expected_hash
+    assert block["content_hash"] == expected_hash
+    assert ev["suggested_review_profile"] == "patch"  # matches edited artifact
+    # Fast is SUGGESTED for a patch profile but never auto-selected: no --mode
+    # token was passed, so locked mode stays absent while the suggestion records
+    # fast. This is the "never silently select fast" guarantee at the init seam.
+    assert ev["suggested_mode"] == "fast"
+    assert block["suggested_mode"] == "fast"
+    assert "mode" not in block
+
+
+def test_operator_token_overrides_suggestion_in_locked_value(workspace):
+    # Artifact whose suggestion would be greenfield; operator locks patch.
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    artifact.write_text("Create a new module `x/y`.\n")
+    result = run(
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--review-profile",
+            "patch",
+            "--no-gitignore-prompt",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    assert block["review_profile"] == "patch"  # locked = operator
+    assert block["suggested_review_profile"] == "greenfield"  # suggestion differs

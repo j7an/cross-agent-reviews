@@ -590,3 +590,76 @@ def test_status_fast_mode_with_absent_review_profile_renders_f2_4_line(tmp_path)
     result = run(["--slug", "foo"], cwd=ws)
     assert result.returncode == 0, result.stderr
     assert "(broad: fallback — F2-4 review_profile unset (legacy))" in result.stdout
+
+
+# --- profile/mode suggestion rendering (issue #35) ---
+
+
+def _write_state(tmp_path, *, review_profile=None, suggestion_evidence=None):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    slug_dir = tmp_path / ".cross-agent-reviews/foo"
+    (slug_dir / "spec").mkdir(parents=True)
+    block = {
+        "path": "docs/specs/foo-design.md",
+        "content_hash": "sha256:" + "0" * 64,
+        "current_stage": "round_1a_pending",
+        "completed_rounds": [],
+        "started_at": "2026-05-21T10:00:00Z",
+        "last_updated_at": "2026-05-21T10:00:00Z",
+    }
+    if review_profile is not None:
+        block["review_profile"] = review_profile
+    if suggestion_evidence is not None:
+        block["suggested_review_profile"] = suggestion_evidence["suggested_review_profile"]
+        block["suggested_mode"] = suggestion_evidence["suggested_mode"]
+        block["suggestion_evidence"] = suggestion_evidence
+    state = {"schema_version": 1, "slug": "foo", "spec": block}
+    (slug_dir / "state.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return tmp_path
+
+
+def _evidence(profile="greenfield", mode="thorough", rule="R-INSUFFICIENT-EVIDENCE"):
+    return {
+        "ruleset_version": 1,
+        "artifact_type": "spec",
+        "artifact_content_hash": "sha256:" + "0" * 64,
+        "resolution": "insufficient_evidence",
+        "suggested_review_profile": profile,
+        "suggested_mode": mode,
+        "fast_eligible": mode == "fast",
+        "fired_rules": [],
+        "resolution_reason": {"rule_id": rule, "selected_profile": profile},
+        "signals": {"referenced_file_paths_count": 0},
+    }
+
+
+def test_status_shows_suggestion_line(tmp_path):
+    ws = _write_state(tmp_path, suggestion_evidence=_evidence())
+    out = run(["--slug", "foo"], cwd=ws).stdout
+    assert "Suggested:" in out
+    assert "profile=greenfield" in out
+
+
+def test_status_flags_divergence_from_locked(tmp_path):
+    ws = _write_state(tmp_path, review_profile="patch", suggestion_evidence=_evidence())
+    out = run(["--slug", "foo"], cwd=ws).stdout
+    assert "diverges from locked" in out
+    assert "routing follows locked" in out
+
+
+def test_status_legacy_block_has_no_suggestion_line(tmp_path):
+    ws = _write_state(tmp_path)  # no suggestion fields
+    out = run(["--slug", "foo"], cwd=ws).stdout
+    assert "Suggested:" not in out
+
+
+def test_status_flags_mode_divergence_when_profile_matches(tmp_path):
+    # Locked profile matches the suggestion, but the suggested fast mode differs
+    # from the (default thorough) locked mode. The "never silently select fast"
+    # contract makes this mode gap audit-relevant, so it must still surface.
+    ev = _evidence(profile="patch", mode="fast", rule="R-SINGLE-RULE")
+    ws = _write_state(tmp_path, review_profile="patch", suggestion_evidence=ev)
+    out = run(["--slug", "foo"], cwd=ws).stdout
+    assert "diverges from locked" in out
+    assert "mode=thorough" in out
+    assert "routing follows locked" in out

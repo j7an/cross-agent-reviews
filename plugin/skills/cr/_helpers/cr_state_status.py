@@ -38,6 +38,32 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
     profile = block.get("review_profile")
     profile_label = profile if profile is not None else "(legacy — unset)"
     lines.append(f"    Mode: {mode_label}   Profile: {profile_label}")
+    ev = block.get("suggestion_evidence")
+    if ev is not None:
+        sp = ev["suggested_review_profile"]
+        sm = ev["suggested_mode"]
+        fe = "yes" if ev["fast_eligible"] else "no"
+        rid = ev["resolution_reason"]["rule_id"]
+        lines.append(f"    Suggested: profile={sp} mode={sm} (fast_eligible={fe})  [{rid}]")
+        # Divergence is surfaced on BOTH routing-relevant axes. review_profile
+        # gates routing scope; locked mode gates fast-path topology (see the
+        # `block.get("mode") == "fast"` branch below). The feature's contract is
+        # "never silently select fast", so a suggested mode that differs from the
+        # locked mode is itself audit-relevant — showing it proves routing
+        # followed the operator's locked value, not the suggestion. Locked mode
+        # defaults to "thorough" when unset.
+        locked_profile = block.get("review_profile")
+        locked_mode = block.get("mode") or "thorough"
+        diverged = []
+        if locked_profile != sp:
+            diverged.append(f"profile={locked_profile if locked_profile is not None else 'unset'}")
+        if locked_mode != sm:
+            diverged.append(f"mode={locked_mode}")
+        if diverged:
+            lines.append(
+                f"               → diverges from locked ({', '.join(diverged)}); "
+                f"routing follows locked"
+            )
     completed = set(block["completed_rounds"])
     current = block["current_stage"]
     shape = terminal_shape(block["completed_rounds"])

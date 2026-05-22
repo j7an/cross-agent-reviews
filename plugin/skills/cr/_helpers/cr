@@ -13,6 +13,7 @@ set -euo pipefail
 #   state-write          -> cr_state_write.py
 #   state-pick-slug      -> cr_state_pick_slug.py
 #   state-status         -> cr_state_status.py
+#   profile-suggest      -> cr_profile_suggest.py
 #   validate             -> cr_validate.py
 #   validate-finding     -> cr_validate_finding.py
 #   extract-placeholders -> cr_extract_placeholders.py
@@ -31,7 +32,7 @@ fi
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: cr <subcommand> [args...]" >&2
-    echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, validate, validate-finding, extract-placeholders" >&2
+    echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, profile-suggest, validate, validate-finding, extract-placeholders" >&2
     exit 2
 fi
 
@@ -39,13 +40,13 @@ HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 subcommand="$1"; shift
 
 case "$subcommand" in
-    state-init|state-read|state-write|state-pick-slug|state-status|validate|validate-finding|extract-placeholders)
+    state-init|state-read|state-write|state-pick-slug|state-status|profile-suggest|validate|validate-finding|extract-placeholders)
         # subcommand -> script: replace '-' with '_' and prefix with cr_, suffix .py.
         script="cr_${subcommand//-/_}.py"
         ;;
     *)
         echo "ERROR: unknown subcommand: '${subcommand}'" >&2
-        echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, validate, validate-finding, extract-placeholders" >&2
+        echo "Subcommands: state-init, state-read, state-write, state-pick-slug, state-status, profile-suggest, validate, validate-finding, extract-placeholders" >&2
         exit 2
         ;;
 esac
