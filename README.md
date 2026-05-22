@@ -1,6 +1,6 @@
 # cross-agent-reviews
 
-A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross-agent spec/plan review pipeline as a single state-driven skill. One slash command — `/cr` — advances the pipeline based on a project-local state file (`.cross-agent-reviews/<slug>/`), so operators no longer paste round JSON between rounds on a single host. Reviewer rounds *audit* the artifact in fresh sessions; author rounds *settle* findings without requiring a fresh session, with a strict final round preserving cross-agent diversity by construction. v0.1.x ships local-only; install via the host's `/plugin` slash-commands (see [Install](#install) below).
+A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross-agent spec/plan review pipeline as a single state-driven skill. One slash command — `/cr` — advances the pipeline based on a project-local state file (`.cross-agent-reviews/<slug>/`), so operators no longer paste round JSON between rounds on a single host. Reviewer rounds *audit* the artifact in fresh sessions; author rounds *settle* findings without requiring a fresh session, with a strict final round preserving cross-agent diversity by construction. Reviews **scale to artifact risk**: an operator-locked `review_profile` sets the minimum review breadth and an optional `fast` `mode` enables deterministic shortcuts — auto-settling clean rounds and impact-routing verification — without weakening the final independent blocker review (see [Review profiles and modes](#review-profiles-and-modes)). v0.1.x ships local-only; install via the host's `/plugin` slash-commands (see [Install](#install) below).
 
 ## How it works
 
@@ -16,6 +16,8 @@ A multi-host plugin (Claude Code + Codex) that packages a 3-round / 6-step cross
 
 Round 3b runs only when Round 3a found blockers. A **clean 3a** — every reviewer agent `ship_ready` with zero findings — terminates the pipeline directly (see **Terminal status** below). Round 3c (final verification) runs only when Round 3b accepted and corrected blockers; a Round 3b that rejected every blocker terminates directly.
 
+In **`fast` mode**, a clean `1a`/`2a` audit auto-settles — the empty `1b`/`2b` is generated and persisted with no manual settle round — and `2a`/`3a` verification is impact-routed to the slices touched by accepted findings plus mandatory global and cross-artifact coverage. Any ambiguity, blocker, spec drift, cross-artifact mismatch, or incomplete finding lineage falls back to broad review. Final `3a` always keeps full parallel independent reviewer coverage for every slice in its selected scope.
+
 **Fresh session per audit round.** The router applies a fresh-session preflight before audit rounds (1a, 2a, 3a) and before the verification round (3c) — cross-agent diversity demands the reviewer/verifier come to the artifact without prior interpretive frame. Settle rounds (1b, 2b, 3b) may continue in the same session or a fresh one (operator choice).
 
 **Terminal status.** The pipeline terminates one of three ways:
@@ -24,6 +26,29 @@ Round 3b runs only when Round 3a found blockers. A **clean 3a** — every review
 - **Via Round 3c** — Round 3b accepted and corrected blockers, then Round 3c independently verified the corrections. `final_status: CORRECTED_AND_READY`.
 
 Between Round 3b and a `CORRECTED_AND_READY` terminal the pipeline holds two non-terminal states: `final_verification_pending` (3c not yet run) and `final_verification_failed` (a 3c attempt found unresolved blockers or regressions — fix the artifact and rerun `/cr`).
+
+## Review profiles and modes
+
+`review_profile` and `mode` are **locked once at artifact-block init** and cannot change mid-pipeline. Pass them as order-independent tokens alongside the artifact path:
+
+```
+/cr docs/specs/foo-design.md patch fast
+```
+
+| Token | Values | Controls |
+|---|---|---|
+| `review_profile` | `patch` · `feature` · `greenfield` | Minimum review breadth (slice count, mandatory coverage). |
+| `mode` | `thorough` (default) · `fast` | Whether the deterministic shortcuts the profile allows fire. |
+
+- **`patch`** — targeted fix, small refactor, or doc correction: most aggressive deterministic reduction.
+- **`feature`** — new behavior in an existing codebase: moderate reduction; final `3a` stays broad until narrower routing is proven safe.
+- **`greenfield`** — new subsystem or broad architecture: conservative; broad review stays mandatory.
+
+Legacy or absent values preserve the original `thorough` behavior unchanged.
+
+### Suggestion preview
+
+`/cr suggest <artifact-path>` prints a **deterministic, explainable** profile/mode recommendation with rule-ID evidence and writes no state. It never auto-selects — routing always follows the operator's locked values. Init records the suggestion beside the locked values for audit, and `/cr status` shows it, flagging any divergence from the locked profile or mode. Ambiguous or conflicting signals yield the safer (broader) profile, and a suggested `fast` is never silently selected.
 
 ## Architecture
 
@@ -160,7 +185,7 @@ v0.1.x is local-only — the URL is reserved but not yet published.
 State file does all handoff. Per the §5.4 fresh-session policy, fresh sessions are mandatory only before audit rounds (1a, 2a, 3a); settle rounds (1b, 2b, 3b) may continue in the same session or a fresh one — operator's choice (design §9.1, §10.1).
 
 ```
-[fresh session 1]    /cr <spec-path> → cr_state_init creates state, runs round 1a
+[fresh session 1]    /cr <spec-path> [<profile>] [fast] → cr_state_init locks mode/profile, runs round 1a
 [same or fresh]      /cr             → state says next is 1b; runs round 1b
 [fresh session]      /cr             → state says next is 2a (audit); fresh required
 [same or fresh]      /cr             → state says next is 2b; runs round 2b
@@ -177,7 +202,7 @@ State file does all handoff. Per the §5.4 fresh-session policy, fresh sessions 
 … [plan rounds with the same audit/settle alternation] …
 ```
 
-Operator never pastes JSON.
+Operator never pastes JSON. `/cr status` reports the locked mode/profile, the recorded suggestion (and any divergence), auto-settled rounds, impact-routed rounds, and any fallback reasons.
 
 ### Cross-host workflow (paste at host transitions)
 
