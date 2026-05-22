@@ -26,7 +26,23 @@ DENSITY_HIGH_RATIO = 0.5  # ... or this anchored/total ratio with >=3 refs
 FANOUT_DIRS = 4  # distinct directories -> broad fan-out
 SMALL_FILES = 3  # at/below this referenced-path count is "small"
 CHECKLIST_MIN = 3  # checklist items needed to call a plan checklist-y
+PROSE_LOW = 0.33  # requirement_prose_ratio: below this -> low
+PROSE_HIGH = 0.66  # requirement_prose_ratio: at/above this -> high
 PATHS_LIST_CAP = 200  # bound the persisted path list
+MARKERS_LIST_CAP = 50  # bound the persisted creation-marker phrase list
+
+# Surfaced verbatim in `signals["thresholds"]` so the audit trail proves which
+# fixed cutoffs the bucketed signals were derived from (spec: "Thresholds are
+# named constants in the module (and surfaced in the recorded signals)").
+_THRESHOLDS = {
+    "density_high_abs": DENSITY_HIGH_ABS,
+    "density_high_ratio": DENSITY_HIGH_RATIO,
+    "fanout_dirs": FANOUT_DIRS,
+    "small_files": SMALL_FILES,
+    "checklist_min": CHECKLIST_MIN,
+    "prose_low": PROSE_LOW,
+    "prose_high": PROSE_HIGH,
+}
 
 # A path-like token: >=1 slash and a dotted filename, optional :line anchor.
 _PATH_RE = re.compile(r"\b([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]+)(?::(\d+))?")
@@ -44,21 +60,24 @@ _ARCH_HEADING_RE = re.compile(
 
 def _categorize(path: str) -> str:
     name = path.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0]
     if (
         name.startswith("test_")
-        or name.endswith("_test.py")
+        or stem.endswith("_test")
         or "/tests/" in path
         or path.startswith("tests/")
     ):
         return "tests"
+    # round_docs is checked before docs: round-*.md files are .md, so the docs
+    # rule would otherwise shadow them and they'd never reach this category.
+    if name.startswith("round-"):
+        return "round_docs"
     if path.startswith("docs/") or "/docs/" in path or name.endswith(".md"):
         return "docs"
     if "/_shared/" in path:
         return "shared_templates"
     if "schema" in path and name.endswith(".json"):
         return "schemas"
-    if name.startswith("round-"):
-        return "round_docs"
     if "/_helpers/" in path:
         return "helpers"
     return "other"
@@ -97,7 +116,9 @@ def extract_signals(artifact_text: str, artifact_type: str) -> dict:
     docs_only = total > 0 and categories.get("docs", 0) == total
     tests_only = total > 0 and categories.get("tests", 0) == total
 
-    creation = len(_CREATION_RE.findall(artifact_text))
+    creation_matches = _CREATION_RE.findall(artifact_text)
+    creation = len(creation_matches)
+    creation_phrases = sorted({m.lower() for m in creation_matches})[:MARKERS_LIST_CAP]
 
     cross_artifact = sum(1 for p in paths_sorted if re.search(r"docs/(specs|plans)/", p))
 
@@ -112,6 +133,15 @@ def extract_signals(artifact_text: str, artifact_type: str) -> dict:
     )
     checklist_only = checklist_items >= CHECKLIST_MIN and prose_lines <= checklist_items
 
+    nonblank = sum(1 for line in artifact_text.splitlines() if line.strip())
+    prose_ratio = prose_lines / nonblank if nonblank else 0.0
+    if prose_ratio >= PROSE_HIGH:
+        prose_bucket = "high"
+    elif prose_ratio >= PROSE_LOW:
+        prose_bucket = "med"
+    else:
+        prose_bucket = "low"
+
     signals = {
         "artifact_type": artifact_type,
         "referenced_file_paths_count": total,
@@ -121,6 +151,7 @@ def extract_signals(artifact_text: str, artifact_type: str) -> dict:
         "line_anchored_refs": anchored,
         "existing_ref_density": _density_bucket(anchored, total),
         "creation_markers": creation,
+        "creation_marker_phrases": creation_phrases,
         "file_category_counts": categories,
         "docs_only": docs_only,
         "tests_only": tests_only,
@@ -128,6 +159,8 @@ def extract_signals(artifact_text: str, artifact_type: str) -> dict:
         "checklist_item_count": checklist_items,
         "checklist_only": checklist_only,
         "architecture_section_present": bool(_ARCH_HEADING_RE.search(artifact_text)),
+        "requirement_prose_ratio": prose_bucket,
+        "thresholds": dict(_THRESHOLDS),
     }
     return signals
 
@@ -209,7 +242,7 @@ def _broadest(profiles: set[str]) -> str:
 def _matched_signals(rule_id: str, signals: dict) -> dict:
     """Bounded, rule-relevant signal values for the evidence trail."""
     keys_by_rule = {
-        "R-NEW-SUBSYSTEM": ["creation_markers"],
+        "R-NEW-SUBSYSTEM": ["creation_markers", "creation_marker_phrases"],
         "R-BROAD-FANOUT": ["referenced_directories_count", "creation_markers"],
         "R-CROSS-ARTIFACT-DEPS": ["cross_artifact_dependency_count"],
         "R-DOCS-ONLY": ["docs_only", "referenced_file_paths_count"],

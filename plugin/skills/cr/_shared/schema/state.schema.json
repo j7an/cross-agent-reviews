@@ -45,13 +45,15 @@
     "fired_rule": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rule_id", "kind"],
+      "required": ["rule_id", "kind", "matched_signals"],
       "properties": {
         "rule_id": {"type": "string"},
         "kind": {"type": "string", "enum": ["profile", "mode"]},
         "votes_profile": {"type": "string", "enum": ["patch", "feature", "greenfield"]},
         "matched_signals": {"type": "object"}
-      }
+      },
+      "if": {"properties": {"kind": {"const": "profile"}}},
+      "then": {"required": ["votes_profile"]}
     },
     "suggestion_evidence": {
       "type": "object",

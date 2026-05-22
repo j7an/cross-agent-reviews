@@ -473,6 +473,41 @@ def test_state_rejects_suggestion_evidence_missing_required(schema_dir, registry
     _expect_invalid(schema_dir, registry, "state.schema.json", state)
 
 
+def test_state_rejects_fired_rule_missing_matched_signals(schema_dir, registry):
+    # fired_rule.matched_signals is required: malformed audit evidence is rejected.
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [
+        {"rule_id": "R-NEW-SUBSYSTEM", "kind": "profile", "votes_profile": "greenfield"}
+    ]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_rejects_profile_fired_rule_missing_votes_profile(schema_dir, registry):
+    # A profile-kind rule must carry votes_profile (conditional requirement).
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [{"rule_id": "R-DOCS-ONLY", "kind": "profile", "matched_signals": {}}]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _expect_invalid(schema_dir, registry, "state.schema.json", state)
+
+
+def test_state_accepts_mode_fired_rule_without_votes_profile(schema_dir, registry):
+    # A mode-kind rule legitimately omits votes_profile.
+    ev = _suggestion_evidence()
+    ev["fired_rules"] = [
+        {
+            "rule_id": "R-FAST-ELIGIBLE-PATCH",
+            "kind": "mode",
+            "matched_signals": {"resolved_profile": "patch"},
+        }
+    ]
+    state = _base_state()
+    state["spec"]["suggestion_evidence"] = ev
+    _validate(schema_dir, registry, "state.schema.json", state)
+
+
 def test_state_accepts_suggestion_fields_on_plan(schema_dir, registry):
     state = _base_state()
     state["spec"]["current_stage"] = "ready_for_implementation"

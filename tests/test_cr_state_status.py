@@ -651,3 +651,15 @@ def test_status_legacy_block_has_no_suggestion_line(tmp_path):
     ws = _write_state(tmp_path)  # no suggestion fields
     out = run(["--slug", "foo"], cwd=ws).stdout
     assert "Suggested:" not in out
+
+
+def test_status_flags_mode_divergence_when_profile_matches(tmp_path):
+    # Locked profile matches the suggestion, but the suggested fast mode differs
+    # from the (default thorough) locked mode. The "never silently select fast"
+    # contract makes this mode gap audit-relevant, so it must still surface.
+    ev = _evidence(profile="patch", mode="fast", rule="R-SINGLE-RULE")
+    ws = _write_state(tmp_path, review_profile="patch", suggestion_evidence=ev)
+    out = run(["--slug", "foo"], cwd=ws).stdout
+    assert "diverges from locked" in out
+    assert "mode=thorough" in out
+    assert "routing follows locked" in out

@@ -40,6 +40,7 @@ HELPERS = (
     "cr_validate.py",
     "cr_validate_finding.py",
     "cr_extract_placeholders.py",
+    "cr_profile_suggest.py",
 )
 
 # Subcommand <-> helper script mapping documented in the wrapper header.
@@ -54,6 +55,7 @@ WRAPPER_SUBCOMMANDS = (
     ("validate", "cr_validate.py"),
     ("validate-finding", "cr_validate_finding.py"),
     ("extract-placeholders", "cr_extract_placeholders.py"),
+    ("profile-suggest", "cr_profile_suggest.py"),
 )
 
 
