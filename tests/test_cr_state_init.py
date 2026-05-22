@@ -502,6 +502,12 @@ def test_init_recomputes_after_artifact_edited_between_preview_and_init(workspac
     assert ev["artifact_content_hash"] == expected_hash
     assert block["content_hash"] == expected_hash
     assert ev["suggested_review_profile"] == "patch"  # matches edited artifact
+    # Fast is SUGGESTED for a patch profile but never auto-selected: no --mode
+    # token was passed, so locked mode stays absent while the suggestion records
+    # fast. This is the "never silently select fast" guarantee at the init seam.
+    assert ev["suggested_mode"] == "fast"
+    assert block["suggested_mode"] == "fast"
+    assert "mode" not in block
 
 
 def test_operator_token_overrides_suggestion_in_locked_value(workspace):

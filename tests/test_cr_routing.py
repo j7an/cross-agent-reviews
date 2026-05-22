@@ -148,6 +148,42 @@ def test_decide_2a_patch_fast_complete_lineage_narrow():
     assert decision.fallback_reasons == ()
 
 
+def test_decide_2a_ignores_suggestion_fields():
+    # Block locked to patch+fast (narrow-eligible). Its suggestion contradicts
+    # (greenfield/thorough). If decide_2a read suggestion fields, the greenfield
+    # value would force a broad fallback. It must not: routing follows locked
+    # values. Mirrors the decide_3a guard so both routing stages are covered.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    state["suggested_review_profile"] = "greenfield"
+    state["suggested_mode"] = "thorough"
+    state["suggestion_evidence"] = {
+        "ruleset_version": 1,
+        "artifact_type": "spec",
+        "artifact_content_hash": "sha256:" + "0" * 64,
+        "resolution": "single",
+        "suggested_review_profile": "greenfield",
+        "suggested_mode": "thorough",
+        "fast_eligible": False,
+        "fired_rules": [],
+        "resolution_reason": {"rule_id": "R-ARCH-PROPOSAL", "selected_profile": "greenfield"},
+        "signals": {},
+    }
+    r1a = _round_1a(plan)
+    r1b = _round_1b(
+        accepted=[
+            ("R1-1-001", {"fix_criterion": "c", "verification_target": "t"}),
+        ],
+        changelog=[
+            {"finding_id": "R1-1-001", "change_made": "edit", "additional_affected_slices": [3]},
+        ],
+    )
+    decision = decide_2a(state, r1a, r1b)
+    # Still narrow: the greenfield/thorough SUGGESTION did not force a fallback.
+    assert decision.scope == "narrow"
+    assert decision.fallback_reasons == ()
+
+
 def test_decide_2a_legacy_state_falls_back_F2_4():  # noqa: N802
     plan = _slice_plan_spec()
     state = _state()["spec"]  # no mode, no review_profile
