@@ -83,9 +83,19 @@ def validate_slug(slug: str) -> None:
         raise ValueError(f"invalid slug {slug!r}: does not match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}")
 
 
+def compute_content_hash_bytes(data: bytes) -> str:
+    """Hash raw bytes into the canonical `sha256:<hex>` content-hash form.
+
+    Single source of truth for content hashing. Path- and bytes-based callers
+    both route through here so a hash computed from artifact bytes (e.g. the
+    profile-suggestion evidence) is guaranteed equal to the hash computed from
+    the same file on disk.
+    """
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
 def compute_content_hash(path: Path) -> str:
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    return f"sha256:{digest}"
+    return compute_content_hash_bytes(path.read_bytes())
 
 
 def now_iso8601_utc() -> str:

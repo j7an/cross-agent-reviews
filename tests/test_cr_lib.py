@@ -55,6 +55,26 @@ def test_compute_content_hash_known_value(tmp_path):
     )
 
 
+# --- compute_content_hash_bytes ---
+
+
+def test_compute_content_hash_bytes_matches_path(tmp_path):
+    from _cr_lib import compute_content_hash, compute_content_hash_bytes
+
+    data = b"hello world\n"
+    p = tmp_path / "artifact.md"
+    p.write_bytes(data)
+
+    assert compute_content_hash_bytes(data) == compute_content_hash(p)
+    assert compute_content_hash_bytes(data).startswith("sha256:")
+
+
+def test_compute_content_hash_bytes_is_deterministic():
+    from _cr_lib import compute_content_hash_bytes
+
+    assert compute_content_hash_bytes(b"abc") == compute_content_hash_bytes(b"abc")
+
+
 # --- now_iso8601_utc ---
 
 
