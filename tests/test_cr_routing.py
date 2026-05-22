@@ -367,6 +367,57 @@ def test_decide_3a_patch_fast_complete_lineage_narrow():
     assert decision.selected_slices == (1, 3, 5)
 
 
+def test_decide_3a_ignores_suggestion_fields():
+    # Block locked to patch+fast (narrow-eligible). Its suggestion contradicts
+    # (greenfield/thorough). If routing read suggestion fields, the greenfield
+    # value would force F3-2 broad. It must not: routing follows locked values.
+    plan = _slice_plan_spec()
+    state = _state(mode="fast", review_profile="patch")["spec"]
+    state["suggested_review_profile"] = "greenfield"
+    state["suggested_mode"] = "thorough"
+    state["suggestion_evidence"] = {
+        "ruleset_version": 1,
+        "artifact_type": "spec",
+        "artifact_content_hash": "sha256:" + "0" * 64,
+        "resolution": "single",
+        "suggested_review_profile": "greenfield",
+        "suggested_mode": "thorough",
+        "fast_eligible": False,
+        "fired_rules": [],
+        "resolution_reason": {"rule_id": "R-ARCH-PROPOSAL", "selected_profile": "greenfield"},
+        "signals": {},
+    }
+    r1a = _round_1a(plan)
+    r1b = _round_1b()
+    r2a = _round_2a(
+        agents=[
+            {
+                "agent_id": 1,
+                "status": "verified",
+                "findings": [],
+                "round_1_verifications": [
+                    {"round_1_finding_id": "R1-1-001", "status": "resolved", "evidence": "x"}
+                ],
+            },
+        ]
+    )
+    r2b = _round_2b(
+        finding_lineage=[
+            _lineage(
+                lineage_id="L-2b-R1-1-001",
+                original_finding_id="R1-1-001",
+                originating_agent_id=1,
+                affected_slices=[1, 3],
+                latest_verification={"status": "resolved", "evidence": "x"},
+                prior_lineage_id="L-1b-R1-1-001",
+            ),
+        ]
+    )
+    decision = decide_3a(state, r1a, r1b, r2a, r2b)
+    # Still narrow: the greenfield/thorough SUGGESTION did not force broad.
+    assert decision.scope == "narrow"
+
+
 def test_decide_3a_feature_fast_always_broad_F3_2():  # noqa: N802
     plan = _slice_plan_spec()
     state = _state(mode="fast", review_profile="feature")["spec"]

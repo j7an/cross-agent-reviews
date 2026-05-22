@@ -198,3 +198,17 @@ def test_wrapper_dispatches_profile_suggest(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["artifact_type"] == "plan"
+
+
+def test_no_confidence_field_emitted():
+    ev = suggest_for_artifact_bytes(b"Create a new module `x/y`.\n", "plan")
+    flat = json.dumps(ev).lower()
+    assert "confidence" not in flat
+
+
+def test_persistence_round_trip(tmp_path):
+    data = b"Edit `docs/a.md`.\n"
+    ev = suggest_for_artifact_bytes(data, "plan")
+    p = tmp_path / "state.json"
+    p.write_text(json.dumps({"e": ev}))
+    assert json.loads(p.read_text())["e"] == ev

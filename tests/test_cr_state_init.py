@@ -502,3 +502,26 @@ def test_init_recomputes_after_artifact_edited_between_preview_and_init(workspac
     assert ev["artifact_content_hash"] == expected_hash
     assert block["content_hash"] == expected_hash
     assert ev["suggested_review_profile"] == "patch"  # matches edited artifact
+
+
+def test_operator_token_overrides_suggestion_in_locked_value(workspace):
+    # Artifact whose suggestion would be greenfield; operator locks patch.
+    artifact = workspace / "docs" / "specs" / "foo-design.md"
+    artifact.write_text("Create a new module `x/y`.\n")
+    result = run(
+        [
+            "--artifact-path",
+            str(artifact),
+            "--artifact-type",
+            "spec",
+            "--review-profile",
+            "patch",
+            "--no-gitignore-prompt",
+        ],
+        cwd=workspace,
+        stdin="",
+    )
+    assert result.returncode == 0, result.stderr
+    block = json.loads((workspace / ".cross-agent-reviews/foo/state.json").read_text())["spec"]
+    assert block["review_profile"] == "patch"  # locked = operator
+    assert block["suggested_review_profile"] == "greenfield"  # suggestion differs
