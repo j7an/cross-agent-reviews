@@ -29,6 +29,15 @@ material. Do not rely on `export CR_HELPER` persisting across shell tool calls.
 
 Operator's input is one of:
 
+- **Suggestion preview** (`/cr suggest <artifact-path>`) — read-only; match this
+  first. When the operator's input begins with the literal token `suggest`
+  followed by an artifact path, run `"${CR_HELPER}" profile-suggest
+  --artifact-path <path>` (add `--artifact-type spec|plan` when the path is not
+  under `docs/specs/` or `docs/plans/` and lacks a `-design`/`-spec`/`-plan`
+  suffix). Present the printed suggestion + evidence to the operator and
+  **stop** — this writes no state and starts no review. To act on it, the
+  operator re-runs `/cr <path> <suggested-profile> [<suggested-mode>]`, which
+  locks the chosen values at init.
 - **No input** — advance the active pipeline. Run `"${CR_HELPER}" state-pick-slug` to pick the slug.
 - **Artifact path** (e.g., `docs/specs/foo-design.md`) — start a new review or augment an existing slug. Run `"${CR_HELPER}" state-pick-slug --input <path>`.
 - **Mode/profile tokens** — when the operator's input includes the reserved
@@ -45,7 +54,7 @@ Operator's input is one of:
 - **Outbound cross-host cue + artifact path** (an artifact path combined with "review on a different host", "this is for host B" / "for the other host", "init only" / "bootstrap only" / "export bootstrap", or "I'll continue on another host") — Host A side of the paste handshake. Initialize state locally and stop after emitting the bootstrap payload for the operator to carry to Host B. See §1.5 below; do NOT proceed to §2 or §4.
 - **Slug name** — explicit slug. Run `"${CR_HELPER}" state-pick-slug --input <slug>`.
 - **Inbound cross-host paste cue** (a cross-host cue with NO artifact path, OR "I just ran round Na on host A", "import this round", "here is the paste") — Host B side: enter paste-import mode. See §3 below. (The disambiguator vs. the outbound branch is the presence of an artifact path: with a path the operator is starting a review and exporting it; without a path the operator is receiving someone else's paste.)
-- **Status query** ("show status", `/cr status`) — run `"${CR_HELPER}" state-status [--slug <slug>]` and present its output.
+- **Status query** ("show status", `/cr status`) — run `"${CR_HELPER}" state-status [--slug <slug>]` and present its output. For each block, `state-status` renders a `Suggested:` line (the recorded advisory profile/mode and its resolution rule) below the `Mode:/Profile:` line; when the suggestion diverges from the locked profile it adds a follow-up line noting that routing follows the locked value.
 
 If `cr_state_pick_slug.py` returns `{"action": "ask_for_artifact_path"}`, ask the operator for the artifact path or a `state.json` paste, then re-run.
 
@@ -72,6 +81,13 @@ place they are written.
 `<ARTIFACT_TYPE>` is the `artifact_type` returned by `cr_state_pick_slug.py`. The picker derives it from the path's `docs/specs/` vs. `docs/plans/` directory (falling back to suffix `-design`/`-spec`/`-plan` per §5.5) when the input is an artifact path; for slug-name input and no-input single-active advance, it derives type from the latest block in `state.json` (most-recent `last_updated_at`, with ties going to `spec`). When the operator gave only a slug name and the relevant block is missing, the picker omits `artifact_type` and the router asks the operator for the artifact path before invoking the script.
 
 The script's stdout is the `state.json` payload — capture it for cross-host scenarios.
+
+At init, `cr_state_init.py` also records a deterministic, advisory
+`suggested_review_profile` / `suggested_mode` / `suggestion_evidence` derived
+from the artifact text. This is audit data only: it never changes routing, and
+locked `mode`/`review_profile` still come solely from explicit operator tokens.
+Accepting a suggestion means passing the suggested token on the first init —
+there is no post-init accept path.
 
 ## 1.5. Outbound cross-host bootstrap (Host A side)
 
