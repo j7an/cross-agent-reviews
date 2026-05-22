@@ -182,3 +182,19 @@ def test_preview_undetectable_type_is_hard_error(tmp_path):
     r = _run(["--artifact-path", str(art)], cwd=tmp_path)
     assert r.returncode != 0
     assert "artifact-type" in r.stderr.lower()
+
+
+def test_wrapper_dispatches_profile_suggest(tmp_path):
+    wrapper = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr"
+    art = tmp_path / "docs" / "plans" / "foo-plan.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("- [ ] a\n- [ ] b\n- [ ] c\n")
+    r = subprocess.run(
+        [str(wrapper), "profile-suggest", "--artifact-path", str(art)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["artifact_type"] == "plan"
