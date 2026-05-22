@@ -298,3 +298,53 @@ def suggest_for_artifact_bytes(artifact_bytes: bytes, artifact_type: str) -> dic
         "artifact_content_hash": compute_content_hash_bytes(artifact_bytes),
         **core,
     }
+
+
+def _human_summary(ev: dict) -> str:
+    reason = ev["resolution_reason"]
+    competing = reason.get("competing_rules")
+    tail = f" (competing: {', '.join(competing)})" if competing else ""
+    return (
+        f"suggested: profile={ev['suggested_review_profile']} "
+        f"mode={ev['suggested_mode']} (fast_eligible="
+        f"{'yes' if ev['fast_eligible'] else 'no'})  "
+        f"[{reason['rule_id']}{tail}]"
+    )
+
+
+def main() -> int:
+    import argparse
+    import sys
+    from pathlib import Path
+
+    from _cr_lib import canonical_json, err
+    from cr_state_pick_slug import _derive_artifact_type
+
+    p = argparse.ArgumentParser(description="Read-only profile/mode suggestion preview.")
+    p.add_argument("--artifact-path", required=True, type=Path)
+    p.add_argument("--artifact-type", choices=["spec", "plan"])
+    args = p.parse_args()
+
+    artifact = args.artifact_path
+    if not artifact.is_absolute():
+        artifact = (Path.cwd() / artifact).resolve()
+    if not artifact.is_file():
+        return err(f"artifact path not found: {artifact}", code=2)
+
+    artifact_type = args.artifact_type or _derive_artifact_type(artifact)
+    if artifact_type is None:
+        return err(
+            "could not derive --artifact-type from path; pass --artifact-type spec|plan "
+            "(preview is non-interactive and will not guess)."
+        )
+
+    ev = suggest_for_artifact_bytes(artifact.read_bytes(), artifact_type)
+    sys.stdout.write(canonical_json(ev) + "\n")
+    sys.stderr.write(_human_summary(ev) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

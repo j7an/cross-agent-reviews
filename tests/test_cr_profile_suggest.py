@@ -2,8 +2,29 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from _cr_lib import compute_content_hash_bytes
 from cr_profile_suggest import extract_signals, suggest, suggest_for_artifact_bytes
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PS_SCRIPT = REPO_ROOT / "plugin" / "skills" / "cr" / "_helpers" / "cr_profile_suggest.py"
+
+
+def _run(args, cwd):
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    return subprocess.run(
+        [sys.executable, str(PS_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
 
 
 def test_extracts_paths_and_line_anchors():
@@ -126,3 +147,38 @@ def test_suggest_for_artifact_bytes_stamps_hash_and_version():
 def test_suggest_is_deterministic():
     data = b"Create a new module `x/y`.\n"
     assert suggest_for_artifact_bytes(data, "plan") == suggest_for_artifact_bytes(data, "plan")
+
+
+def test_preview_derives_type_from_path_and_prints_json(tmp_path):
+    art = tmp_path / "docs" / "specs" / "foo-design.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("## Architecture\n\nCreate a new module `x/y`.\n")
+    r = _run(["--artifact-path", str(art)], cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["artifact_type"] == "spec"
+    assert payload["suggested_review_profile"] == "greenfield"
+
+
+def test_preview_writes_no_state(tmp_path):
+    art = tmp_path / "docs" / "plans" / "foo-plan.md"
+    art.parent.mkdir(parents=True)
+    art.write_text("- [ ] a\n- [ ] b\n- [ ] c\n")
+    _run(["--artifact-path", str(art)], cwd=tmp_path)
+    assert not (tmp_path / ".cross-agent-reviews").exists()
+
+
+def test_preview_explicit_type_override(tmp_path):
+    art = tmp_path / "ambiguous.md"
+    art.write_text("Edit `docs/a.md`.\n")
+    r = _run(["--artifact-path", str(art), "--artifact-type", "plan"], cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["artifact_type"] == "plan"
+
+
+def test_preview_undetectable_type_is_hard_error(tmp_path):
+    art = tmp_path / "ambiguous.md"
+    art.write_text("Edit `docs/a.md`.\n")
+    r = _run(["--artifact-path", str(art)], cwd=tmp_path)
+    assert r.returncode != 0
+    assert "artifact-type" in r.stderr.lower()
