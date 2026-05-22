@@ -38,6 +38,20 @@ def _render_block(art: str, block: dict, artifact_dir: Path, now: datetime) -> l
     profile = block.get("review_profile")
     profile_label = profile if profile is not None else "(legacy — unset)"
     lines.append(f"    Mode: {mode_label}   Profile: {profile_label}")
+    ev = block.get("suggestion_evidence")
+    if ev is not None:
+        sp = ev["suggested_review_profile"]
+        sm = ev["suggested_mode"]
+        fe = "yes" if ev["fast_eligible"] else "no"
+        rid = ev["resolution_reason"]["rule_id"]
+        lines.append(f"    Suggested: profile={sp} mode={sm} (fast_eligible={fe})  [{rid}]")
+        locked = block.get("review_profile")
+        if locked != sp:
+            locked_label = locked if locked is not None else "unset"
+            lines.append(
+                f"               → diverges from locked (profile={locked_label}); "
+                f"routing follows locked"
+            )
     completed = set(block["completed_rounds"])
     current = block["current_stage"]
     shape = terminal_shape(block["completed_rounds"])
