@@ -64,9 +64,9 @@ def test_github_actions_ecosystem_does_not_ignore_semver_major(config: dict) -> 
     assert not has_major_ignore, "github-actions ecosystem should NOT ignore majors (spec §7.3)"
 
 
-def test_both_ecosystems_have_cooldown_7_days(config: dict) -> None:
+def test_both_ecosystems_have_cooldown_5_days(config: dict) -> None:
     for ecosystem in config["updates"]:
         cooldown = ecosystem.get("cooldown", {})
-        assert cooldown.get("default-days") == 7, (
-            f"{ecosystem['package-ecosystem']} missing cooldown.default-days: 7"
+        assert cooldown.get("default-days") == 5, (
+            f"{ecosystem['package-ecosystem']} missing cooldown.default-days: 5"
         )
