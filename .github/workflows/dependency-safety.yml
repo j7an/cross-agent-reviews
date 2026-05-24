@@ -16,6 +16,6 @@ concurrency:
 
 jobs:
   safety:
-    uses: j7an/shared-workflows/.github/workflows/dependency-safety.yml@704d0b58e2093d238c7389756974efd2ce582d20  # v2.6.0
+    uses: j7an/shared-workflows/.github/workflows/dependency-safety.yml@a8655fe2f5fb3aabfe5531b283956c683ba3029b  # v3.0.0
     with:
       minimum_release_age_days: 5  # Must match cooldown.default-days in .github/dependabot.yml.
