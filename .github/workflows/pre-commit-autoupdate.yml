@@ -38,6 +38,7 @@ jobs:
           branch: "deps/pre-commit-autoupdate"
           delete-branch: true
           labels: dependencies
+          sign-commits: true
           body: |
             Automated weekly pre-commit autoupdate.
 
