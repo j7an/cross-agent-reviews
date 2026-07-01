@@ -1,4 +1,4 @@
-name: Security
+name: Security Scanning
 
 on:
   push:
@@ -8,104 +8,16 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
-permissions:
-  contents: read
-  security-events: write
-  actions: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
 
 jobs:
-  codeql:
-    name: CodeQL
-    runs-on: ubuntu-latest
+  security:
     permissions:
-      contents: read
-      security-events: write
       actions: read
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
-        with:
-          languages: python
-          queries: security-extended
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
-
-  trufflehog:
-    name: TruffleHog
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          fetch-depth: 0
-      - name: Scan for secrets
-        id: trufflehog
-        continue-on-error: true
-        uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70  # v3.95.6
-        with:
-          extra_args: --only-verified
-      - name: Re-raise TruffleHog failure
-        if: steps.trufflehog.outcome == 'failure'
-        run: |
-          echo "::error::TruffleHog scan reported verified secrets — review the step above for details."
-          exit 1
-
-  zizmor:
-    name: Zizmor
-    runs-on: ubuntu-latest
-    permissions:
       contents: read
       security-events: write
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa  # v0.5.7
-        with:
-          min-severity: medium
-          min-confidence: medium
-          # advanced-security defaults to true in v0.5.3 (uploads SARIF and
-          # does NOT fail the job on findings). Set to false to make medium-
-          # or-higher findings fail the workflow, matching the local
-          # `uvx zizmor --min-severity=medium --min-confidence=medium` gate
-          # used in Task 17 / CONTRIBUTING.md and the harden-runner-style
-          # security posture in spec §9.5.
-          advanced-security: false
-
-  trivy:
-    name: Trivy
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        with:
-          scan-type: fs
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-      - name: Upload Trivy SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
-        with:
-          sarif_file: trivy-results.sarif
+    uses: j7an/shared-workflows/.github/workflows/security-scan.yml@5997f2092ef3fea11a5bcdca8ec81382bcc30eba # v4.1.0

@@ -5,43 +5,16 @@ on:
     - cron: "0 8 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: pre-commit-autoupdate
+  cancel-in-progress: true
 
 jobs:
   autoupdate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
-      - name: Run pre-commit autoupdate
-        run: uv run pre-commit autoupdate
-      - name: Check for changes
-        id: diff
-        run: |
-          if git diff --quiet .pre-commit-config.yaml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Open PR with updates
-        if: steps.diff.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
-        with:
-          commit-message: "deps: update pre-commit hooks"
-          title: "deps: update pre-commit hooks"
-          branch: "deps/pre-commit-autoupdate"
-          delete-branch: true
-          labels: dependencies
-          sign-commits: true
-          body: |
-            Automated weekly pre-commit autoupdate.
-
-            Note: GITHUB_TOKEN-authored PRs do not trigger CI on themselves
-            (recursion guard). To force CI, close-and-reopen this PR or
-            push an empty commit.
+    permissions:
+      contents: read
+    uses: j7an/shared-workflows/.github/workflows/pre-commit-autoupdate.yml@5997f2092ef3fea11a5bcdca8ec81382bcc30eba # v4.1.0
+    secrets:
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
